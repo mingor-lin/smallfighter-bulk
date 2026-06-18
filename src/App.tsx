@@ -496,8 +496,10 @@ const weekDays = [
 const weekHours = Array.from({ length: 24 }, (_, index) => index);
 const taskDetailPageSize = 5;
 const taskFailReasons = [
-  '不支持当前状态修改',
-  '非自动投放，不允许修改出价',
+  '出价方式不支持修改浅层出价',
+  '非项目浅层出价场景',
+  '本地缺少可改价判断字段',
+  '项目状态不支持改价',
   '巨量接口限频',
   '巨量接口返回失败',
   '对象已删除或无权限',
@@ -734,6 +736,10 @@ const initialTaskRecords: AsyncTaskRecord[] = [
 function createFilteredProjectBidTask(payload: FilteredBidTaskPayload): Promise<FilteredBidTaskResult> {
   // Only the filter snapshot and bid parameters are submitted here. Project IDs,
   // current bids, and project details are intentionally not loaded for this flow.
+  // The backend filters projects that cannot update shallow cpa_bid from local
+  // cache data before calling /open_api/v3.0/project/cpa_bid/update/ in batches
+  // of up to 10 projects per advertiser. Filtered projects are recorded as
+  // failures without calling OceanEngine.
   void payload;
   return Promise.resolve({
     taskId: `JL-BID-${Date.now().toString().slice(-8)}`,
@@ -1943,7 +1949,11 @@ export default function SmallFighterPlan() {
           <ExclamationCircleOutlined />
           <div>
             <b>将对当前筛选结果中的全部{currentLevelLabel}提交异步改价任务</b>
-            <span>提交前不会逐条校验{currentLevelLabel}详情，不会批量查询当前出价；不支持改价的{currentLevelLabel}会记录为失败，并在任务结果中展示原因。</span>
+            <span>
+              {levelKey === 'project'
+                ? '提交前不会逐条查询项目详情或当前出价；任务执行时会先基于小飞机本地数据过滤不支持改价的项目。'
+                : '提交前不会逐条校验单元详情，不会批量查询当前出价；不支持改价的单元会记录为失败，并在任务结果中展示原因。'}
+            </span>
           </div>
         </div>
 
@@ -1973,6 +1983,11 @@ export default function SmallFighterPlan() {
           <div className="sf-filtered-bid-preview">
             改价参数：统一修改为 {bidAmount ? `${bidAmount} 元` : '--'}
           </div>
+          {levelKey === 'project' && (
+            <div className="sf-budget-rule-tip sf-bid-rule-tip">
+              本入口仅修改项目浅层出价 cpa_bid，不修改深层出价、ROI 系数或出价方式。任务执行时会基于小飞机本地数据过滤不支持改价的项目，过滤失败原因会进入任务结果；提交前不会逐条查询项目详情或当前出价。
+            </div>
+          )}
         </section>
 
         <section className="sf-filtered-bid-summary">
@@ -1989,7 +2004,9 @@ export default function SmallFighterPlan() {
 
         {latestBidTask && (
           <div className="sf-filtered-bid-task">
-            任务已创建，后台将按筛选条件分批执行。
+            {levelKey === 'project'
+              ? '任务已创建，后台将先按本地数据过滤可改价项目，再按账号分批执行。'
+              : '任务已创建，后台将按筛选条件分批执行。'}
           </div>
         )}
       </Modal>
