@@ -1396,6 +1396,20 @@ button.sf-task-stat {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
+}
+
+.sf-task-result-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.sf-task-result-actions .ant-btn-primary {
+  background: #43b66a;
+  border-color: #43b66a;
 }
 
 .sf-task-detail-toolbar {

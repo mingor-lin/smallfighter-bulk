@@ -1054,6 +1054,16 @@ export default function SmallFighterPlan() {
     }, 0);
   };
 
+  const handleRetryFailedDetails = () => {
+    if (!selectedTask || selectedTask.failedCount === 0) {
+      message.warning('当前任务没有可重试的失败项');
+      return;
+    }
+    setTaskDetailFailedOnly(true);
+    setTaskDetailPage(1);
+    message.success(`已创建 ${selectedTask.failedCount.toLocaleString()} 条失败项的批量重试任务`);
+  };
+
   const handleOpenFilteredBid = () => {
     if (currentResultCount === 0) {
       message.warning('当前筛选结果为空，请先调整筛选条件');
@@ -2557,15 +2567,25 @@ export default function SmallFighterPlan() {
             <section className="sf-task-drawer-section sf-task-result-section">
               <div className="sf-task-result-head">
                 <div className="sf-task-drawer-title">结果详情</div>
-                <Checkbox
-                  checked={taskDetailFailedOnly}
-                  onChange={(event) => {
-                    setTaskDetailFailedOnly(event.target.checked);
-                    setTaskDetailPage(1);
-                  }}
-                >
-                  只查看失败任务
-                </Checkbox>
+                <div className="sf-task-result-actions">
+                  <Checkbox
+                    checked={taskDetailFailedOnly}
+                    onChange={(event) => {
+                      setTaskDetailFailedOnly(event.target.checked);
+                      setTaskDetailPage(1);
+                    }}
+                  >
+                    只查看失败任务
+                  </Checkbox>
+                  <Button
+                    size="small"
+                    type="primary"
+                    disabled={selectedTask.failedCount === 0}
+                    onClick={handleRetryFailedDetails}
+                  >
+                    批量重试失败项
+                  </Button>
+                </div>
               </div>
 
               <div className="sf-task-detail-toolbar">
