@@ -447,8 +447,8 @@ def run(args: argparse.Namespace) -> int:
         return 0
 
     try:
-        config = load_config(args.config)
         if args.command == "check-auth":
+            config = load_config(args.config)
             result = session_preflight(config)
             output(result, args.as_json)
             return 0
@@ -460,6 +460,7 @@ def run(args: argparse.Namespace) -> int:
             output(result, args.as_json)
             return 0
 
+        config = load_config(args.config)
         if args.confirm != CONFIRM_PHRASE:
             raise UserInputError(f"execute 必须提供确认口令：{CONFIRM_PHRASE}")
         if args.request_key and (
