@@ -1,0 +1,9 @@
+{
+  "base_url": "http://td-nginx-inner.tx.ppp.clicki.cn",
+  "cookies": {
+    "_aproxySID": "[REDACTED: set only on the Hermes host]",
+    "admin.sid": "[REDACTED: set only on the Hermes host]"
+  },
+  "timeout_seconds": 30,
+  "dedupe_file": "/home/ubuntu/.hermes/state/smallfighter-history-sync.json"
+}
