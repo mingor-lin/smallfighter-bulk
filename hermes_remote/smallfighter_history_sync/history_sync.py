@@ -165,7 +165,12 @@ def load_config(path: str) -> dict[str, Any]:
     aproxy_sid = str(cookies.get("_aproxySID") or "")
     admin_sid = str(cookies.get("admin.sid") or "")
     for label, value in (("_aproxySID", aproxy_sid), ("admin.sid", admin_sid)):
-        if not value or not COOKIE_VALUE_RE.fullmatch(value):
+        if (
+            not value
+            or value.startswith("[REDACTED")
+            or value in {"CHANGE_ME", "REPLACE_ME"}
+            or not COOKIE_VALUE_RE.fullmatch(value)
+        ):
             raise UserInputError(f"Cookie {label} 缺失或包含非法字符")
 
     timeout = config.get("timeout_seconds", 30)
