@@ -1,6 +1,8 @@
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import {
   AppstoreOutlined,
+  BellOutlined,
   CalendarOutlined,
   CloseOutlined,
   CloudDownloadOutlined,
@@ -14,6 +16,7 @@ import {
   RightOutlined,
   SearchOutlined,
   SwapRightOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
 import {
   Button,
@@ -44,11 +47,12 @@ type ScheduleType = 'SCHEDULE_FROM_NOW' | 'SCHEDULE_START_END';
 type ProjectOptStatus = 'ENABLE' | 'DISABLE';
 type ProjectBudgetMode = 'BUDGET_MODE_DAY' | 'BUDGET_MODE_INFINITE';
 type WeekScheduleType = 'ALL' | 'CUSTOM';
-type PageView = 'promotion' | 'task';
+type PageView = 'promotion' | 'task' | 'tencentBatchCreate' | 'monitoringLinks';
 type LevelKey = 'project' | 'unit';
 type PromotionLevel = '项目' | '单元';
 type TaskStatus = '成功' | '部分成功' | '失败' | '进行中' | '创建中';
 type TaskOperationType =
+  | '批量创建腾讯广告'
   | '按筛选结果修改出价'
   | '按筛选结果修改预算'
   | '按筛选结果开启/关闭项目'
@@ -60,7 +64,18 @@ type TaskOperationType =
   | '按筛选结果删除单元'
   | '批量删除素材'
   | '同步未使用素材';
-type TaskDetailStatus = '成功' | '失败';
+type TaskDetailStatus = '成功' | '失败' | '执行中';
+type TencentMarketingCarrierType =
+  | 'MARKETING_CARRIER_TYPE_JUMP_PAGE'
+  | 'MARKETING_CARRIER_TYPE_APP_ANDROID'
+  | 'MARKETING_CARRIER_TYPE_APP_IOS';
+type TencentOptimizationGoal =
+  | 'OPTIMIZATIONGOAL_PROMOTION_VIEW_KEY_PAGE'
+  | 'OPTIMIZATIONGOAL_APP_DOWNLOAD'
+  | 'OPTIMIZATIONGOAL_APP_ACTIVATE'
+  | 'OPTIMIZATIONGOAL_APP_REGISTER'
+  | 'OPTIMIZATIONGOAL_ONE_DAY_RETENTION'
+  | 'OPTIMIZATIONGOAL_APP_PURCHASE';
 
 interface ProjectRow {
   key: string;
@@ -180,6 +195,10 @@ interface TaskDetailRow {
   accountName: string;
   failReason: string;
   executedAt: string;
+  jumpType?: string;
+  resourceId?: string;
+  resourceName?: string;
+  configWarning?: string;
 }
 
 interface AsyncTaskRecord {
@@ -200,7 +219,159 @@ interface AsyncTaskRecord {
   details: TaskDetailRow[];
 }
 
+interface TencentBatchTemplate {
+  carrierType: TencentMarketingCarrierType;
+  appId: string;
+  optimizationGoal?: TencentOptimizationGoal;
+  platformChannelAssetId: string;
+}
+
+type TencentResourceKind = 'APP_DIRECT' | 'LANDING_PAGE';
+type TencentJumpType = 'ANDROID_DEFAULT' | 'JUMP_STORE' | 'APP_DIRECT' | 'OFFICIAL_LANDING' | 'ONE_CLICK';
+type TencentLandingConfigRule = 'BY_ACCOUNT' | 'BY_AD' | 'BY_CREATIVE';
+type TencentResourceStatus = '可用' | '审核中' | '已失效';
+
+interface TencentMonitoringLinkGroup {
+  id: string;
+  name: string;
+  accountId: string;
+  clickTrackingUrl?: string;
+  enterpriseWechatUrl?: string;
+  officialAccountFollowUrl?: string;
+  officialAccountWelcomeUrl?: string;
+  videoAccountUrl?: string;
+  attributionForwardUrl?: string;
+  shopUrl?: string;
+  appDirectUrl?: string;
+  androidAppId?: string;
+  iosAppId?: string;
+  universalUrl?: string;
+  fallbackLandingPageRef?: string;
+  status: TencentResourceStatus;
+  source: 'MOCK' | 'XLSX_IMPORT';
+}
+
+interface TencentBatchAccount {
+  id: string;
+  name: string;
+  platform: 'Android' | 'iOS' | 'Android+iOS';
+}
+
+interface TencentResource {
+  id: string;
+  kind: TencentResourceKind;
+  name: string;
+  url: string;
+  accountIds: string[];
+  status: TencentResourceStatus;
+  androidAppId?: string;
+  iosAppId?: string;
+  universalUrl?: string;
+  fallbackLandingPageId?: string;
+  fallbackLandingPageName?: string;
+  monitoringLinkGroupId?: string;
+  monitoringLinkGroup?: TencentMonitoringLinkGroup;
+}
+
+interface TencentAccountAssignment {
+  jumpType: TencentJumpType;
+  resourceIds: string[];
+  fallbackResourceId?: string;
+  monitoringLinkGroupId?: string;
+}
+
+interface TencentBatchDraft {
+  accountIds: string[];
+  targetingPackageIds: string[];
+  titleCount: number;
+  materialGroupCount: number;
+  marketingGoal: string;
+  promotionProduct: string;
+  adName: string;
+  creativeName: string;
+  creativeCopy: string;
+  brandJumpName: string;
+  preselectedAppDirectId?: string;
+  preselectedLandingPageId?: string;
+  assignments: Record<string, TencentAccountAssignment>;
+}
+
+interface TencentBatchPreview {
+  savedAt: string;
+  account_id: string;
+  adgroup_request: {
+    marketing_goal: 'MARKETING_GOAL_USER_GROWTH';
+    marketing_target_type: 'MARKETING_TARGET_TYPE_PLATFORM_CHANNEL';
+    marketing_asset_id: number | string;
+    marketing_carrier_type: TencentMarketingCarrierType;
+    marketing_carrier_detail?: {
+      marketing_carrier_id: string;
+      marketing_sub_carrier_id?: string;
+    };
+    optimization_goal?: TencentOptimizationGoal;
+    targeting?: {
+      user_os: Array<'ANDROID' | 'IOS'>;
+    };
+  };
+  dynamic_creative_request: {
+    main_jump_info: Array<{
+      value: {
+        page_type: 'PAGE_TYPE_XJ_WEB_H5' | 'PAGE_TYPE_ANDROID_APP' | 'PAGE_TYPE_IOS_APP';
+        page_spec: {
+          h5_spec?: {
+            page_url: string;
+          };
+          android_app_spec?: {
+            android_app_id: string;
+          };
+          ios_app_spec?: {
+            ios_app_id: string;
+          };
+        };
+      };
+    }>;
+  };
+}
+
+const monitoringTemplateHeaders = [
+  '媒体账户ID*',
+  '监测链接组名称*',
+  '点击监测链接',
+  '企业微信监测链接',
+  '公众号关注链接',
+  '公众号欢迎语链接',
+  '微信视频号链接',
+  '归因转发链接',
+  '微信小店链接',
+  '*表示必填项，注意：不同营销载体可填写监测链接内容组合不同',
+  '应用直达',
+  'Android应用id',
+  'iOS应用id',
+  '通用链接页URL',
+  '设置兜底落地页',
+] as const;
+
+interface MonitoringImportRow {
+  rowNumber: number;
+  accountId: string;
+  groupName: string;
+  appDirectUrl: string;
+  androidAppId: string;
+  iosAppId: string;
+  universalUrl: string;
+  fallbackLandingPageRef: string;
+  errors: string[];
+  group?: Omit<TencentMonitoringLinkGroup, 'id'>;
+}
+
+interface MonitoringImportPreview {
+  fileName: string;
+  sheetName: string;
+  rows: MonitoringImportRow[];
+}
+
 const taskOperationOptions: TaskOperationType[] = [
+  '批量创建腾讯广告',
   '按筛选结果修改出价',
   '按筛选结果修改预算',
   '按筛选结果开启/关闭项目',
@@ -215,6 +386,21 @@ const taskOperationOptions: TaskOperationType[] = [
 ];
 
 const taskStatusOptions: TaskStatus[] = ['成功', '部分成功', '失败', '进行中', '创建中'];
+
+const tencentCarrierOptions: Array<{ label: string; value: TencentMarketingCarrierType }> = [
+  { label: '页面跳转', value: 'MARKETING_CARRIER_TYPE_JUMP_PAGE' },
+  { label: 'Android 应用', value: 'MARKETING_CARRIER_TYPE_APP_ANDROID' },
+  { label: 'iOS 应用', value: 'MARKETING_CARRIER_TYPE_APP_IOS' },
+];
+
+const tencentOptimizationGoalOptions: Array<{ label: string; value: TencentOptimizationGoal }> = [
+  { label: '关键页面浏览', value: 'OPTIMIZATIONGOAL_PROMOTION_VIEW_KEY_PAGE' },
+  { label: '下载', value: 'OPTIMIZATIONGOAL_APP_DOWNLOAD' },
+  { label: '激活', value: 'OPTIMIZATIONGOAL_APP_ACTIVATE' },
+  { label: '注册', value: 'OPTIMIZATIONGOAL_APP_REGISTER' },
+  { label: '次日留存', value: 'OPTIMIZATIONGOAL_ONE_DAY_RETENTION' },
+  { label: '付费次数', value: 'OPTIMIZATIONGOAL_APP_PURCHASE' },
+];
 
 const channels = [
   ['channel-all', '渠道合计', '#6ea8ff', '✣'],
@@ -549,8 +735,12 @@ function createTaskRecord({
   paramsSummary,
   forceStatus,
   level = '项目',
+  media = '巨量引擎',
   createdOffsetMinutes = -2,
   finishedOffsetMinutes = 0,
+  details,
+  successCount: requestedSuccessCount,
+  failedCount: requestedFailedCount,
 }: {
   taskId: string;
   operationType: TaskOperationType;
@@ -560,12 +750,16 @@ function createTaskRecord({
   paramsSummary?: string;
   forceStatus?: TaskStatus;
   level?: PromotionLevel;
+  media?: string;
   createdOffsetMinutes?: number;
   finishedOffsetMinutes?: number;
+  details?: TaskDetailRow[];
+  successCount?: number;
+  failedCount?: number;
 }): AsyncTaskRecord {
-  const details = buildTaskDetails(operationType, level);
-  const failedCount = Math.max(1, Math.round(affectedCount * 0.014));
-  const successCount = Math.max(0, affectedCount - failedCount);
+  const taskDetails = details ?? buildTaskDetails(operationType, level);
+  const failedCount = requestedFailedCount ?? Math.max(1, Math.round(affectedCount * 0.014));
+  const successCount = requestedSuccessCount ?? Math.max(0, affectedCount - failedCount);
   const status = forceStatus ?? getTaskStatus(successCount, failedCount, affectedCount);
 
   return {
@@ -579,11 +773,11 @@ function createTaskRecord({
     successCount,
     failedCount,
     operator,
-    media: '巨量引擎',
+    media,
     level,
     filterSnapshot,
     paramsSummary,
-    details,
+    details: taskDetails,
   };
 }
 
@@ -876,8 +1070,1242 @@ function SelectShell({ label, width = 180, children }: { label: string; width?: 
   );
 }
 
+function isTencentAppCarrier(carrierType: TencentMarketingCarrierType) {
+  return carrierType === 'MARKETING_CARRIER_TYPE_APP_ANDROID' || carrierType === 'MARKETING_CARRIER_TYPE_APP_IOS';
+}
+
+function getTencentCarrierLabel(carrierType: TencentMarketingCarrierType) {
+  return tencentCarrierOptions.find((item) => item.value === carrierType)?.label || '页面跳转';
+}
+
+function getTencentAppIdLabel(carrierType: TencentMarketingCarrierType) {
+  return carrierType === 'MARKETING_CARRIER_TYPE_APP_IOS' ? 'iOS 应用 ID' : 'Android 应用 ID';
+}
+
+function getTencentOptimizationOptions(carrierType: TencentMarketingCarrierType) {
+  if (carrierType === 'MARKETING_CARRIER_TYPE_JUMP_PAGE') {
+    return tencentOptimizationGoalOptions.filter((item) =>
+      ['OPTIMIZATIONGOAL_PROMOTION_VIEW_KEY_PAGE', 'OPTIMIZATIONGOAL_APP_REGISTER'].includes(item.value),
+    );
+  }
+
+  return tencentOptimizationGoalOptions.filter((item) =>
+    [
+      'OPTIMIZATIONGOAL_APP_DOWNLOAD',
+      'OPTIMIZATIONGOAL_APP_ACTIVATE',
+      'OPTIMIZATIONGOAL_APP_REGISTER',
+      'OPTIMIZATIONGOAL_ONE_DAY_RETENTION',
+      'OPTIMIZATIONGOAL_APP_PURCHASE',
+    ].includes(item.value),
+  );
+}
+
+function normalizeMarketingAssetId(value: string) {
+  const trimmed = value.trim();
+  return /^\d+$/.test(trimmed) ? Number(trimmed) : trimmed;
+}
+
+function buildTencentBatchPreview({
+  carrierType,
+  appId,
+  optimizationGoal,
+  platformChannelAssetId,
+}: TencentBatchTemplate): TencentBatchPreview {
+  const appCarrier = isTencentAppCarrier(carrierType);
+  const isAndroid = carrierType === 'MARKETING_CARRIER_TYPE_APP_ANDROID';
+  const isIos = carrierType === 'MARKETING_CARRIER_TYPE_APP_IOS';
+
+  return {
+    savedAt: formatNow(),
+    account_id: '<ACCOUNT_ID>',
+    adgroup_request: {
+      marketing_goal: 'MARKETING_GOAL_USER_GROWTH',
+      marketing_target_type: 'MARKETING_TARGET_TYPE_PLATFORM_CHANNEL',
+      marketing_asset_id: normalizeMarketingAssetId(platformChannelAssetId),
+      marketing_carrier_type: carrierType,
+      ...(appCarrier
+        ? {
+            marketing_carrier_detail: {
+              marketing_carrier_id: appId.trim(),
+              marketing_sub_carrier_id: '',
+            },
+            targeting: {
+              user_os: [isAndroid ? 'ANDROID' : 'IOS'],
+            },
+          }
+        : {}),
+      ...(optimizationGoal ? { optimization_goal: optimizationGoal } : {}),
+    },
+    dynamic_creative_request: {
+      main_jump_info: [
+        {
+          value: {
+            page_type: isAndroid ? 'PAGE_TYPE_ANDROID_APP' : isIos ? 'PAGE_TYPE_IOS_APP' : 'PAGE_TYPE_XJ_WEB_H5',
+            page_spec: isAndroid
+              ? {
+                  android_app_spec: {
+                    android_app_id: appId.trim(),
+                  },
+                }
+              : isIos
+                ? {
+                    ios_app_spec: {
+                      ios_app_id: appId.trim(),
+                    },
+                  }
+                : {
+                    h5_spec: {
+                      page_url: '<PAGE_URL>',
+                    },
+                  },
+          },
+        },
+      ],
+    },
+  };
+}
+
+const tencentBatchAccounts: TencentBatchAccount[] = [
+  { id: '48694821', name: '内部测试户-可下发-焯文1', platform: 'Android+iOS' },
+  { id: '68819951', name: '内部测试账号(三维)-长涛-下发关闭2', platform: 'Android+iOS' },
+  { id: '68819948', name: '内部测试账号(三维)-长涛-下发关闭', platform: 'Android+iOS' },
+];
+
+const tencentBatchResources: TencentResource[] = [
+  {
+    id: 'APP-DIRECT-1001',
+    kind: 'APP_DIRECT',
+    name: '爱看超值优选-应用直达',
+    url: 'https://m.example.com/app-direct/1001',
+    accountIds: ['48694821', '68819951', '68819948'],
+    status: '可用',
+    androidAppId: 'android-demo-1001',
+    iosAppId: 'ios-demo-1001',
+    universalUrl: 'https://m.example.com/universal/1001',
+    fallbackLandingPageId: 'LP-526',
+    fallbackLandingPageName: '新人一分钱买-2222',
+    monitoringLinkGroupId: 'APP-DIRECT-1001',
+  },
+  {
+    id: 'APP-DIRECT-1002',
+    kind: 'APP_DIRECT',
+    name: '超值优选-Android专用直达',
+    url: 'https://m.example.com/app-direct/1002',
+    accountIds: ['48694821', '68819951'],
+    status: '可用',
+    androidAppId: 'android-demo-1002',
+    universalUrl: 'https://m.example.com/universal/1002',
+    fallbackLandingPageId: 'LP-526',
+    fallbackLandingPageName: '新人一分钱买-2222',
+    monitoringLinkGroupId: 'APP-DIRECT-1002',
+  },
+  {
+    id: 'LP-526',
+    kind: 'LANDING_PAGE',
+    name: '新人一分钱买-2222',
+    url: 'https://m.example.com/landing/526',
+    accountIds: ['48694821', '68819951', '68819948'],
+    status: '可用',
+  },
+  {
+    id: 'LP-527',
+    kind: 'LANDING_PAGE',
+    name: '品牌官方落地页-测试',
+    url: 'https://m.example.com/landing/527',
+    accountIds: ['48694821', '68819948'],
+    status: '审核中',
+  },
+];
+
+function readMonitoringCell(row: unknown[], columnIndex: number) {
+  const value = row[columnIndex];
+  return value === undefined || value === null ? '' : String(value).trim();
+}
+
+function resourceToMonitoringLinkGroup(resource: TencentResource): TencentMonitoringLinkGroup {
+  return {
+    id: resource.monitoringLinkGroupId || resource.id,
+    name: resource.monitoringLinkGroup?.name || resource.name,
+    accountId: resource.monitoringLinkGroup?.accountId || resource.accountIds[0] || '',
+    clickTrackingUrl: resource.monitoringLinkGroup?.clickTrackingUrl,
+    enterpriseWechatUrl: resource.monitoringLinkGroup?.enterpriseWechatUrl,
+    officialAccountFollowUrl: resource.monitoringLinkGroup?.officialAccountFollowUrl,
+    officialAccountWelcomeUrl: resource.monitoringLinkGroup?.officialAccountWelcomeUrl,
+    videoAccountUrl: resource.monitoringLinkGroup?.videoAccountUrl,
+    attributionForwardUrl: resource.monitoringLinkGroup?.attributionForwardUrl,
+    shopUrl: resource.monitoringLinkGroup?.shopUrl,
+    appDirectUrl: resource.monitoringLinkGroup?.appDirectUrl || resource.url,
+    androidAppId: resource.monitoringLinkGroup?.androidAppId || resource.androidAppId,
+    iosAppId: resource.monitoringLinkGroup?.iosAppId || resource.iosAppId,
+    universalUrl: resource.monitoringLinkGroup?.universalUrl || resource.universalUrl,
+    fallbackLandingPageRef:
+      resource.monitoringLinkGroup?.fallbackLandingPageRef || resource.fallbackLandingPageId || resource.fallbackLandingPageName,
+    status: resource.status,
+    source: resource.monitoringLinkGroup?.source || 'MOCK',
+  };
+}
+
+function monitoringLinkGroupToResource(group: TencentMonitoringLinkGroup): TencentResource {
+  return {
+    id: group.id,
+    kind: 'APP_DIRECT',
+    name: group.name,
+    url: group.appDirectUrl || '',
+    accountIds: group.accountId ? [group.accountId] : [],
+    status: group.status,
+    androidAppId: group.androidAppId,
+    iosAppId: group.iosAppId,
+    universalUrl: group.universalUrl,
+    fallbackLandingPageId: group.fallbackLandingPageRef,
+    fallbackLandingPageName: group.fallbackLandingPageRef,
+    monitoringLinkGroupId: group.id,
+    monitoringLinkGroup: group,
+  };
+}
+
+const initialTencentMonitoringLinkGroups = tencentBatchResources
+  .filter((resource) => resource.kind === 'APP_DIRECT')
+  .map(resourceToMonitoringLinkGroup);
+
+async function parseMonitoringTemplate(file: File): Promise<MonitoringImportPreview> {
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellText: true, cellDates: false });
+  const sheetName = '监测链接';
+  const sheet = workbook.Sheets[sheetName];
+  if (!sheet) throw new Error(`模板缺少“${sheetName}”页签`);
+
+  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '' });
+  const headerRow = (rows[0] || []).map((value) => String(value ?? '').trim());
+  const requiredHeaders = ['媒体账户ID*', '监测链接组名称*'];
+  const missingHeaders = requiredHeaders.filter((header) => !headerRow.includes(header));
+  if (missingHeaders.length > 0) throw new Error(`模板缺少必填表头：${missingHeaders.join('、')}`);
+
+  const columnIndex = (header: string) => headerRow.indexOf(header);
+  const read = (row: unknown[], header: string) => {
+    const index = columnIndex(header);
+    return index < 0 ? '' : readMonitoringCell(row, index);
+  };
+
+  const dataRows = rows.slice(1).filter((row) => row.some((value) => String(value ?? '').trim()));
+  return {
+    fileName: file.name,
+    sheetName,
+    rows: dataRows.map((row, index) => {
+      const accountId = read(row, '媒体账户ID*');
+      const groupName = read(row, '监测链接组名称*');
+      const errors = [
+        ...(!accountId ? ['缺少媒体账户ID'] : []),
+        ...(!groupName ? ['缺少监测链接组名称'] : []),
+      ];
+      const group: Omit<TencentMonitoringLinkGroup, 'id'> = {
+        name: groupName,
+        accountId,
+        clickTrackingUrl: read(row, '点击监测链接'),
+        enterpriseWechatUrl: read(row, '企业微信监测链接'),
+        officialAccountFollowUrl: read(row, '公众号关注链接'),
+        officialAccountWelcomeUrl: read(row, '公众号欢迎语链接'),
+        videoAccountUrl: read(row, '微信视频号链接'),
+        attributionForwardUrl: read(row, '归因转发链接'),
+        shopUrl: read(row, '微信小店链接'),
+        appDirectUrl: read(row, '应用直达'),
+        androidAppId: read(row, 'Android应用id'),
+        iosAppId: read(row, 'iOS应用id'),
+        universalUrl: read(row, '通用链接页URL'),
+        fallbackLandingPageRef: read(row, '设置兜底落地页'),
+        status: '可用',
+        source: 'XLSX_IMPORT',
+      };
+      return {
+        rowNumber: index + 2,
+        accountId,
+        groupName,
+        appDirectUrl: group.appDirectUrl || '',
+        androidAppId: group.androidAppId || '',
+        iosAppId: group.iosAppId || '',
+        universalUrl: group.universalUrl || '',
+        fallbackLandingPageRef: group.fallbackLandingPageRef || '',
+        errors,
+        group,
+      };
+    }),
+  };
+}
+
+function getTencentResourceMissingFields(resource?: TencentResource) {
+  if (!resource || resource.kind !== 'APP_DIRECT') return [];
+  return [
+    !resource.url ? '应用直达' : '',
+    !resource.androidAppId ? 'Android应用ID' : '',
+    !resource.iosAppId ? 'iOS应用ID' : '',
+    !resource.universalUrl ? '通用链接页URL' : '',
+    !resource.fallbackLandingPageId ? '兜底落地页' : '',
+  ].filter(Boolean);
+}
+
+function cloneTencentBatchDraft(draft: TencentBatchDraft): TencentBatchDraft {
+  return JSON.parse(JSON.stringify(draft)) as TencentBatchDraft;
+}
+
+function createInitialTencentBatchDraft(): TencentBatchDraft {
+  return {
+    accountIds: tencentBatchAccounts.map((account) => account.id),
+    targetingPackageIds: ['TARGET-1001'],
+    titleCount: 1,
+    materialGroupCount: 1,
+    marketingGoal: '品牌宣传',
+    promotionProduct: '商品',
+    adName: '品牌宣传-商品聚合页-Android应用',
+    creativeName: '爱看超值优选-组件化创意',
+    creativeCopy: '新人一分钱买，轻松减脂，同一堂轻轻帮你科学瘦身！',
+    brandJumpName: '爱看超值优选小店',
+    preselectedAppDirectId: 'APP-DIRECT-1001',
+    preselectedLandingPageId: 'LP-526',
+    assignments: {},
+  };
+}
+
+function getTencentBatchResource(resourceId?: string, resources: TencentResource[] = tencentBatchResources) {
+  return resourceId ? resources.find((resource) => resource.id === resourceId) : undefined;
+}
+
+function getTencentJumpTypeLabel(jumpType: TencentJumpType) {
+  return {
+    ANDROID_DEFAULT: 'Android 默认下载页',
+    JUMP_STORE: '跳转厂商商店',
+    APP_DIRECT: '应用直达',
+    OFFICIAL_LANDING: '官方落地页',
+    ONE_CLICK: '一键下载',
+  }[jumpType];
+}
+
+const tencentLandingConfigRules: Array<{ label: string; value: TencentLandingConfigRule }> = [
+  { label: '按广告账号', value: 'BY_ACCOUNT' },
+  { label: '按广告', value: 'BY_AD' },
+  { label: '按广告创意', value: 'BY_CREATIVE' },
+];
+
+function isTencentResourceCompatible(resource: TencentResource, accountId: string) {
+  return resource.accountIds.includes(accountId) && resource.status === '可用';
+}
+
+function buildTencentAssignment(
+  accountId: string,
+  draft: TencentBatchDraft,
+  assignments: Record<string, TencentAccountAssignment>,
+  resources: TencentResource[] = tencentBatchResources,
+): TencentAccountAssignment | undefined {
+  const appDirect = getTencentBatchResource(draft.preselectedAppDirectId, resources);
+  const landingPage = getTencentBatchResource(draft.preselectedLandingPageId, resources);
+  const selected = [appDirect, landingPage].find(
+    (resource): resource is TencentResource => Boolean(resource && isTencentResourceCompatible(resource, accountId)),
+  );
+  if (!selected) return undefined;
+
+  const existing = assignments[accountId];
+  const resourceIds = [...(existing?.resourceIds || [])];
+  if (!resourceIds.includes(selected.id)) resourceIds.push(selected.id);
+
+  if (selected.kind === 'APP_DIRECT') {
+    const fallbackId = landingPage && isTencentResourceCompatible(landingPage, accountId) ? landingPage.id : appDirect?.fallbackLandingPageId;
+    if (fallbackId && !resourceIds.includes(fallbackId)) resourceIds.push(fallbackId);
+    return {
+      jumpType: 'APP_DIRECT',
+      resourceIds,
+      fallbackResourceId: fallbackId,
+      monitoringLinkGroupId: selected.monitoringLinkGroupId,
+    };
+  }
+
+  return {
+    jumpType: 'OFFICIAL_LANDING',
+    resourceIds,
+    fallbackResourceId: existing?.fallbackResourceId,
+  };
+}
+
+function validateTencentBatchDraft(draft: TencentBatchDraft, resources: TencentResource[] = tencentBatchResources): string[] {
+  const errors: string[] = [];
+  if (draft.accountIds.length === 0) errors.push('请至少选择一个广告账号');
+  if (draft.targetingPackageIds.length === 0) errors.push('请至少选择一个定向包');
+  if (draft.titleCount < 1) errors.push('创意标题数不能少于 1');
+  if (draft.materialGroupCount < 1) errors.push('创意素材组数不能少于 1');
+  if (!draft.adName.trim()) errors.push('请填写广告名称');
+  if (!draft.creativeName.trim()) errors.push('请填写创意名称');
+  if (!draft.creativeCopy.trim()) errors.push('请填写创意文案');
+
+  draft.accountIds.forEach((accountId) => {
+    const assignment = draft.assignments[accountId];
+    const account = tencentBatchAccounts.find((item) => item.id === accountId);
+    if (!assignment || assignment.resourceIds.length === 0) {
+      errors.push(`${account?.name || accountId} 尚未配置跳转链接`);
+      return;
+    }
+    const primary = getTencentBatchResource(assignment.resourceIds[0], resources);
+    if (!primary || primary.status !== '可用') {
+      errors.push(`${account?.name || accountId} 的跳转资源不可用`);
+      return;
+    }
+  });
+
+  return Array.from(new Set(errors));
+}
+
+function TencentBatchLegacySidebar({
+  activeItem,
+  onMonitoringLinks,
+}: {
+  activeItem?: string;
+  onMonitoringLinks: () => void;
+}) {
+  const items = ['图文库', '文案库', '定向包', '应用包', '华为投放资产', '落地页', '小程序', '原生锚点', '监测链接', '资产授权管理'];
+  return (
+    <aside className="sf-batch-legacy-sidebar">
+      {items.map((item) => (
+        <button
+          key={item}
+          type="button"
+          className={activeItem === item ? 'active' : ''}
+          onClick={item === '监测链接' ? onMonitoringLinks : undefined}
+        >
+          {item}
+        </button>
+      ))}
+      <div className="sf-batch-legacy-sidebar-group">报表</div>
+      {['项目整体报表', '素材报表', '素材属性报表', '广告报表', '财务报表'].map((item) => (
+        <button key={item} type="button">{item}</button>
+      ))}
+    </aside>
+  );
+}
+
+function createEmptyMonitoringLinkGroup(): TencentMonitoringLinkGroup {
+  return {
+    id: '',
+    name: '',
+    accountId: '',
+    status: '可用',
+    source: 'MOCK',
+  };
+}
+
+function TencentMonitoringLinkManagementPage({
+  groups,
+  onImportGroups,
+  onSaveGroup,
+  onDeleteGroup,
+}: {
+  groups: TencentMonitoringLinkGroup[];
+  onImportGroups: (groups: TencentMonitoringLinkGroup[]) => void;
+  onSaveGroup: (group: TencentMonitoringLinkGroup) => void;
+  onDeleteGroup: (groupId: string) => void;
+}) {
+  const [keyword, setKeyword] = useState('');
+  const [accountFilter, setAccountFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState<TencentResourceStatus | 'all'>('可用');
+  const [carrierFilter, setCarrierFilter] = useState('all');
+  const [importOpen, setImportOpen] = useState(false);
+  const [importPreview, setImportPreview] = useState<MonitoringImportPreview | null>(null);
+  const [importError, setImportError] = useState('');
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editor, setEditor] = useState<TencentMonitoringLinkGroup>(() => createEmptyMonitoringLinkGroup());
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const filteredGroups = useMemo(() => groups.filter((group) => {
+    const searchText = `${group.id} ${group.name} ${group.accountId} ${group.appDirectUrl || ''}`.toLowerCase();
+    const matchesKeyword = !keyword.trim() || searchText.includes(keyword.trim().toLowerCase());
+    const matchesAccount = accountFilter === 'all' || group.accountId === accountFilter;
+    const matchesStatus = statusFilter === 'all' || group.status === statusFilter;
+    const matchesCarrier = carrierFilter === 'all' || (carrierFilter === 'app' ? Boolean(group.appDirectUrl) : !group.appDirectUrl);
+    return matchesKeyword && matchesAccount && matchesStatus && matchesCarrier;
+  }), [accountFilter, carrierFilter, groups, keyword, statusFilter]);
+
+  const openEditor = (group?: TencentMonitoringLinkGroup) => {
+    setEditor(group ? { ...group } : createEmptyMonitoringLinkGroup());
+    setEditorOpen(true);
+  };
+
+  const updateEditorField = <K extends keyof TencentMonitoringLinkGroup>(key: K, value: TencentMonitoringLinkGroup[K]) => {
+    setEditor((previous) => ({ ...previous, [key]: value }));
+  };
+
+  const saveEditor = () => {
+    if (!editor.accountId.trim() || !editor.name.trim()) {
+      message.warning('请填写媒体账户ID和监测链接组名称');
+      return;
+    }
+    onSaveGroup({
+      ...editor,
+      id: editor.id || `MLG-MOCK-${Date.now()}`,
+      name: editor.name.trim(),
+      accountId: editor.accountId.trim(),
+    });
+    setEditorOpen(false);
+    message.success(editor.id ? '监测链接组已更新' : '监测链接组已创建');
+  };
+
+  const downloadTemplate = () => {
+    const worksheet = XLSX.utils.aoa_to_sheet([[
+      ...monitoringTemplateHeaders,
+    ], new Array(monitoringTemplateHeaders.length).fill('')]);
+    worksheet['!cols'] = [
+      { wch: 15 }, { wch: 30 }, { wch: 50 }, { wch: 30 }, { wch: 30 }, { wch: 30 }, { wch: 30 }, { wch: 30 },
+      { wch: 30 }, { wch: 60 }, { wch: 42 }, { wch: 20 }, { wch: 20 }, { wch: 26 }, { wch: 26 },
+    ];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, '监测链接');
+    XLSX.writeFile(workbook, '批量导入广点通监测链接模板.xlsx');
+    message.success('模板已下载');
+  };
+
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setImportError('');
+    setImportPreview(null);
+    try {
+      setImportPreview(await parseMonitoringTemplate(file));
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : '模板解析失败，请检查文件格式');
+    }
+  };
+
+  const confirmImport = () => {
+    if (!importPreview) return;
+    const validRows = importPreview.rows.filter((row) => row.errors.length === 0 && row.group);
+    const stamp = Date.now();
+    onImportGroups(validRows.map((row, index) => ({
+      id: `MLG-${stamp}-${index + 1}`,
+      ...(row.group as Omit<TencentMonitoringLinkGroup, 'id'>),
+    })));
+    setImportOpen(false);
+    setImportPreview(null);
+    setImportError('');
+    message.success(`已追加导入 ${validRows.length} 个监测链接组`);
+  };
+
+  const renderEditorField = (label: string, key: keyof TencentMonitoringLinkGroup, placeholder = '') => {
+    const value = editor[key];
+    return (
+      <label className="sf-monitoring-editor-field" key={String(key)}>
+        <span>{label}</span>
+        <Input
+          value={typeof value === 'string' ? value : ''}
+          placeholder={placeholder}
+          onChange={(event) => updateEditorField(key, event.target.value)}
+        />
+      </label>
+    );
+  };
+
+  const tableColumns: ColumnsType<TencentMonitoringLinkGroup> = [
+    { title: '监测链接组ID', dataIndex: 'id', width: 150 },
+    { title: '监测链接组名称', dataIndex: 'name', width: 220, ellipsis: true },
+    { title: '营销载体类型', width: 130, render: (_, group) => group.appDirectUrl ? 'Android应用' : '网页' },
+    {
+      title: '账号',
+      dataIndex: 'accountId',
+      width: 190,
+      render: (value: string) => {
+        const account = tencentBatchAccounts.find((item) => item.id === value);
+        return account ? `${account.name}（${value}）` : value || '-';
+      },
+    },
+    {
+      title: '点击',
+      dataIndex: 'clickTrackingUrl',
+      width: 250,
+      ellipsis: true,
+      render: (value?: string) => value || '-',
+    },
+    {
+      title: '应用直达',
+      dataIndex: 'appDirectUrl',
+      width: 220,
+      ellipsis: true,
+      render: (value?: string) => value || '-',
+    },
+    { title: 'Android应用ID', dataIndex: 'androidAppId', width: 150, render: (value?: string) => value || '-' },
+    { title: 'iOS应用ID', dataIndex: 'iosAppId', width: 150, render: (value?: string) => value || '-' },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 90,
+      render: (value: TencentResourceStatus) => <span className={`sf-monitoring-status sf-monitoring-status--${value}`}>{value === '可用' ? '正常' : value}</span>,
+    },
+    {
+      title: '操作',
+      width: 130,
+      fixed: 'right',
+      render: (_, group) => (
+        <div className="sf-monitoring-row-actions">
+          <button type="button" onClick={() => openEditor(group)}>编辑</button>
+          <button
+            type="button"
+            onClick={() => Modal.confirm({
+              title: '确认删除监测链接组？',
+              content: `删除后“${group.name}”不会再出现在应用直达资源选择中。`,
+              okText: '删除',
+              cancelText: '取消',
+              onOk: () => {
+                onDeleteGroup(group.id);
+                message.success('监测链接组已删除');
+              },
+            })}
+          >删除</button>
+        </div>
+      ),
+    },
+  ];
+
+  const validImportCount = importPreview?.rows.filter((row) => row.errors.length === 0).length || 0;
+  const invalidImportCount = importPreview?.rows.filter((row) => row.errors.length > 0).length || 0;
+
+  return (
+    <section className="sf-monitoring-page">
+      <div className="sf-monitoring-title-row"><h1>监测链接管理</h1></div>
+      <div className="sf-monitoring-channel-tabs">
+        {['巨量引擎', '磁力引擎', '粉丝通', '腾讯广告'].map((channel) => <button className={channel === '腾讯广告' ? 'active' : ''} type="button" key={channel}>{channel}</button>)}
+      </div>
+      <div className="sf-monitoring-filter-row">
+        <label>媒体账户：<Select value={accountFilter} onChange={setAccountFilter} options={[{ label: '全部', value: 'all' }, ...tencentBatchAccounts.map((account) => ({ label: account.name, value: account.id }))]} /></label>
+        <label>状态：<Select value={statusFilter} onChange={setStatusFilter} options={[{ label: '正常', value: '可用' }, { label: '审核中', value: '审核中' }, { label: '已失效', value: '已失效' }, { label: '全部', value: 'all' }]} /></label>
+        <label>营销载体类型：<Select value={carrierFilter} onChange={setCarrierFilter} options={[{ label: '全部', value: 'all' }, { label: 'Android应用', value: 'app' }, { label: '网页', value: 'web' }]} /></label>
+        <Input className="sf-monitoring-search" placeholder="搜索组名称 / ID / 链接" value={keyword} onChange={(event) => setKeyword(event.target.value)} prefix={<SearchOutlined />} />
+        <Button onClick={() => message.success('刷新成功')}>刷新</Button>
+      </div>
+      <div className="sf-monitoring-action-row">
+        <Button type="primary" onClick={() => openEditor()}>创建监测链接</Button>
+        <Button type="primary" onClick={() => { setImportOpen(true); setImportError(''); setImportPreview(null); }}>批量创建监测链接</Button>
+        <Button onClick={downloadTemplate}>下载批量导入监测模板</Button>
+        <Button icon={<UploadOutlined />} onClick={() => { setImportOpen(true); setImportError(''); setImportPreview(null); }}>上传模板</Button>
+      </div>
+      <div className="sf-monitoring-batch-bar"><Button>批量操作</Button><span>共 {filteredGroups.length} 个监测链接组</span></div>
+      <Table<TencentMonitoringLinkGroup> className="sf-monitoring-table" rowKey="id" columns={tableColumns} dataSource={filteredGroups} pagination={{ pageSize: 8, showSizeChanger: false, showTotal: (total) => `共 ${total} 条记录` }} scroll={{ x: 1650, y: 510 }} />
+
+      <Modal
+        title="批量导入监测链接"
+        open={importOpen}
+        width={1180}
+        centered
+        onCancel={() => { setImportOpen(false); setImportPreview(null); setImportError(''); }}
+        footer={[
+          <Button key="cancel" onClick={() => { setImportOpen(false); setImportPreview(null); setImportError(''); }}>取消</Button>,
+          <Button key="confirm" type="primary" disabled={!importPreview || validImportCount === 0} onClick={confirmImport}>确认追加导入</Button>,
+        ]}
+      >
+        <div className="sf-monitoring-import-toolbar">
+          <Button onClick={downloadTemplate}>下载模板</Button>
+          <Button type="primary" icon={<UploadOutlined />} onClick={() => fileInputRef.current?.click()}>选择文件</Button>
+          <input ref={fileInputRef} type="file" accept=".xlsx,.xls" hidden onChange={handleFileChange} />
+          <span>{importPreview?.fileName || '支持 .xlsx / .xls，要求包含“监测链接”页签'}</span>
+        </div>
+        {importError && <div className="sf-monitoring-import-error">{importError}</div>}
+        {importPreview && (
+          <div className="sf-monitoring-import-preview">
+            <div className="sf-monitoring-import-summary"><b>解析结果</b><span>页签：{importPreview.sheetName}</span><span>总行数：{importPreview.rows.length}</span><span className="is-success">可导入：{validImportCount}</span><span className="is-error">错误：{invalidImportCount}</span></div>
+            <Table<MonitoringImportRow>
+              rowKey="rowNumber"
+              size="small"
+              pagination={false}
+              scroll={{ x: 1250, y: 360 }}
+              dataSource={importPreview.rows}
+              columns={[
+                { title: '行号', dataIndex: 'rowNumber', width: 60 },
+                { title: '媒体账户ID', dataIndex: 'accountId', width: 140 },
+                { title: '监测链接组名称', dataIndex: 'groupName', width: 180, ellipsis: true },
+                { title: '应用直达', dataIndex: 'appDirectUrl', width: 220, ellipsis: true, render: (value: string) => value || '-' },
+                { title: 'Android应用ID', dataIndex: 'androidAppId', width: 140, render: (value: string) => value || '-' },
+                { title: 'iOS应用ID', dataIndex: 'iosAppId', width: 140, render: (value: string) => value || '-' },
+                { title: '通用链接页URL', dataIndex: 'universalUrl', width: 220, ellipsis: true, render: (value: string) => value || '-' },
+                { title: '兜底落地页', dataIndex: 'fallbackLandingPageRef', width: 140, render: (value: string) => value || '-' },
+                { title: '校验结果', width: 180, render: (_, row) => row.errors.length ? <span className="sf-monitoring-import-row-error">{row.errors.join('、')}</span> : <span className="sf-monitoring-import-row-ok">可追加</span> },
+              ]}
+            />
+          </div>
+        )}
+      </Modal>
+
+      <Modal title={editor.id ? '编辑监测链接' : '创建监测链接'} open={editorOpen} width={880} centered onCancel={() => setEditorOpen(false)} onOk={saveEditor} okText="确定" cancelText="取消">
+        <div className="sf-monitoring-editor-grid">
+          {renderEditorField('媒体账户ID*', 'accountId', '请输入媒体账户ID')}
+          {renderEditorField('监测链接组名称*', 'name', '请输入监测链接组名称')}
+          {renderEditorField('点击监测链接', 'clickTrackingUrl')}
+          {renderEditorField('企业微信监测链接', 'enterpriseWechatUrl')}
+          {renderEditorField('公众号关注链接', 'officialAccountFollowUrl')}
+          {renderEditorField('公众号欢迎语链接', 'officialAccountWelcomeUrl')}
+          {renderEditorField('微信视频号链接', 'videoAccountUrl')}
+          {renderEditorField('归因转发链接', 'attributionForwardUrl')}
+          {renderEditorField('微信小店链接', 'shopUrl')}
+          {renderEditorField('应用直达', 'appDirectUrl')}
+          {renderEditorField('Android应用id', 'androidAppId')}
+          {renderEditorField('iOS应用id', 'iosAppId')}
+          {renderEditorField('通用链接页URL', 'universalUrl')}
+          {renderEditorField('设置兜底落地页', 'fallbackLandingPageRef')}
+          <label className="sf-monitoring-editor-field"><span>状态</span><Select value={editor.status} onChange={(value) => updateEditorField('status', value)} options={[{ label: '正常', value: '可用' }, { label: '审核中', value: '审核中' }, { label: '已失效', value: '已失效' }]} /></label>
+        </div>
+      </Modal>
+    </section>
+  );
+}
+
+function TencentBatchCreatePage({
+  onBack,
+  onCreateTask,
+  resources,
+}: {
+  onBack: () => void;
+  onCreateTask: (task: AsyncTaskRecord) => void;
+  resources: TencentResource[];
+}) {
+  const [draft, setDraft] = useState<TencentBatchDraft>(() => createInitialTencentBatchDraft());
+  const [savedTemplate, setSavedTemplate] = useState<TencentBatchDraft | null>(null);
+  const [resourcePickerOpen, setResourcePickerOpen] = useState(false);
+  const [resourcePickerKind, setResourcePickerKind] = useState<TencentResourceKind>('APP_DIRECT');
+  const [resourcePickerSelection, setResourcePickerSelection] = useState<string>();
+  const [accountPickerOpen, setAccountPickerOpen] = useState(false);
+  const [accountPickerSelection, setAccountPickerSelection] = useState<string[]>(draft.accountIds);
+  const [assignmentOpen, setAssignmentOpen] = useState(false);
+  const [assignmentDraft, setAssignmentDraft] = useState<Record<string, TencentAccountAssignment>>({});
+  const [assignmentAccountId, setAssignmentAccountId] = useState(draft.accountIds[0]);
+  const [manualResourceId, setManualResourceId] = useState<string>();
+  const [assignmentNotice, setAssignmentNotice] = useState('');
+  const [landingConfigRule, setLandingConfigRule] = useState<TencentLandingConfigRule>('BY_ACCOUNT');
+  const [landingConfigKind, setLandingConfigKind] = useState<TencentResourceKind>('APP_DIRECT');
+  const [landingResourceSelection, setLandingResourceSelection] = useState<string[]>([]);
+  const [landingConfigSearch, setLandingConfigSearch] = useState('');
+  const [landingPageCount, setLandingPageCount] = useState(1);
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [lastTaskId, setLastTaskId] = useState('');
+
+  const selectedAccounts = useMemo(
+    () => tencentBatchAccounts.filter((account) => draft.accountIds.includes(account.id)),
+    [draft.accountIds],
+  );
+  const preselectedAppDirect = getTencentBatchResource(draft.preselectedAppDirectId, resources);
+  const preselectedLandingPage = getTencentBatchResource(draft.preselectedLandingPageId, resources);
+  const expectedAds = draft.accountIds.length * draft.targetingPackageIds.length * draft.titleCount * draft.materialGroupCount;
+  const currentAssignment = assignmentDraft[assignmentAccountId];
+  const currentAccount = tencentBatchAccounts.find((account) => account.id === assignmentAccountId);
+  const assignmentCount = draft.accountIds.filter((accountId) => draft.assignments[accountId]?.resourceIds.length).length;
+  const landingConfigResources = resources.filter((resource) => {
+    if (resource.kind !== landingConfigKind) return false;
+    const keyword = landingConfigSearch.trim().toLowerCase();
+    return !keyword || `${resource.name} ${resource.id} ${resource.url}`.toLowerCase().includes(keyword);
+  });
+  const landingSelectedResources = landingResourceSelection
+    .map((resourceId) => getTencentBatchResource(resourceId, resources))
+    .filter((resource): resource is TencentResource => Boolean(resource));
+
+  const openResourcePicker = (kind: TencentResourceKind) => {
+    setResourcePickerKind(kind);
+    const currentId = kind === 'APP_DIRECT' ? draft.preselectedAppDirectId : draft.preselectedLandingPageId;
+    setResourcePickerSelection(currentId);
+    setResourcePickerOpen(true);
+  };
+
+  const confirmResourcePicker = () => {
+    setDraft((previous) => ({
+      ...previous,
+      ...(resourcePickerKind === 'APP_DIRECT'
+        ? { preselectedAppDirectId: resourcePickerSelection }
+        : { preselectedLandingPageId: resourcePickerSelection }),
+    }));
+    setResourcePickerOpen(false);
+  };
+
+  const openAccountPicker = () => {
+    setAccountPickerSelection(draft.accountIds);
+    setAccountPickerOpen(true);
+  };
+
+  const confirmAccountPicker = () => {
+    setDraft((previous) => ({
+      ...previous,
+      accountIds: accountPickerSelection,
+      assignments: Object.fromEntries(
+        Object.entries(previous.assignments).filter(([accountId]) => accountPickerSelection.includes(accountId)),
+      ),
+    }));
+    if (!accountPickerSelection.includes(assignmentAccountId)) setAssignmentAccountId(accountPickerSelection[0] || '');
+    setAccountPickerOpen(false);
+    setValidationErrors([]);
+  };
+
+  const clearRules = () => {
+    Modal.confirm({
+      title: '确认清空规则？',
+      content: '将清空当前账号、定向包、创意和跳转资源配置，已保存的规则模板不会受影响。',
+      okText: '清空',
+      cancelText: '取消',
+      onOk: () => {
+        setDraft({
+          ...createInitialTencentBatchDraft(),
+          accountIds: [],
+          preselectedAppDirectId: undefined,
+          preselectedLandingPageId: undefined,
+          assignments: {},
+        });
+        setAssignmentAccountId('');
+        setValidationErrors([]);
+        setLastTaskId('');
+      },
+    });
+  };
+
+  const saveAsTemplate = () => {
+    setSavedTemplate(cloneTencentBatchDraft(draft));
+    message.success('规则模板已保存');
+  };
+
+  const updateTemplate = () => {
+    if (!savedTemplate) {
+      message.warning('暂无可更新的规则模板');
+      return;
+    }
+    setSavedTemplate(cloneTencentBatchDraft(draft));
+    message.success('规则模板已更新');
+  };
+
+  const applyTemplate = () => {
+    if (!savedTemplate) {
+      message.warning('暂无可引用的规则模板');
+      return;
+    }
+    setDraft(cloneTencentBatchDraft(savedTemplate));
+    setAssignmentAccountId(savedTemplate.accountIds[0] || '');
+    setValidationErrors([]);
+    message.success('已引用规则模板');
+  };
+
+  const getDraftWithLandingSelection = () => ({
+    ...draft,
+    ...(landingConfigKind === 'APP_DIRECT'
+      ? { preselectedAppDirectId: landingResourceSelection[0] }
+      : { preselectedLandingPageId: landingResourceSelection[0] }),
+  });
+
+  const calculateOneClickAssignments = (
+    source: Record<string, TencentAccountAssignment>,
+    sourceDraft: TencentBatchDraft = draft,
+  ) => {
+    let assigned = 0;
+    let skipped = 0;
+    const nextAssignments = { ...source };
+    sourceDraft.accountIds.forEach((accountId) => {
+      const existing = nextAssignments[accountId];
+      if (existing?.resourceIds.length) {
+        skipped += 1;
+        return;
+      }
+      const next = buildTencentAssignment(accountId, sourceDraft, nextAssignments, resources);
+      if (!next) {
+        skipped += 1;
+        return;
+      }
+      nextAssignments[accountId] = next;
+      assigned += 1;
+    });
+    return { nextAssignments, assigned, skipped };
+  };
+
+  const openAssignment = (autoAssign = false) => {
+    const baseAssignments = cloneTencentBatchDraft(draft).assignments;
+    setLandingConfigRule('BY_ACCOUNT');
+    setLandingConfigKind('APP_DIRECT');
+    setLandingResourceSelection(draft.preselectedAppDirectId ? [draft.preselectedAppDirectId] : []);
+    setLandingConfigSearch('');
+    setLandingPageCount(1);
+    if (autoAssign) {
+      const result = calculateOneClickAssignments(baseAssignments);
+      setAssignmentDraft(result.nextAssignments);
+      setAssignmentNotice(`已自动分配 ${result.assigned}/${draft.accountIds.length} 个账号${result.skipped ? `，跳过 ${result.skipped} 个（已有配置或资源不兼容）` : ''}`);
+    } else {
+      setAssignmentDraft(baseAssignments);
+      setAssignmentNotice('');
+    }
+    setAssignmentAccountId(draft.accountIds[0] || '');
+    setManualResourceId(undefined);
+    setAssignmentOpen(true);
+  };
+
+  const oneClickAssign = () => {
+    if (!landingResourceSelection[0]) {
+      message.warning(`请先选择${landingConfigKind === 'APP_DIRECT' ? '应用直达' : '官方落地页'}资源`);
+      return;
+    }
+    const configDraft = getDraftWithLandingSelection();
+    const result = calculateOneClickAssignments(assignmentDraft, configDraft);
+    setDraft(configDraft);
+    setAssignmentDraft(result.nextAssignments);
+    setAssignmentNotice(`已分配 ${result.assigned}/${configDraft.accountIds.length} 个账号${result.skipped ? `，跳过 ${result.skipped} 个（已有配置或资源不兼容）` : ''}`);
+  };
+
+  const addResourceToAssignment = (resourceId?: string) => {
+    if (!resourceId || !assignmentAccountId) return;
+    const resource = getTencentBatchResource(resourceId, resources);
+    if (!resource || !isTencentResourceCompatible(resource, assignmentAccountId)) {
+      message.warning('该资源不可用于当前账号');
+      return;
+    }
+    setAssignmentDraft((previous) => {
+      const existing = previous[assignmentAccountId];
+      const resourceIds = Array.from(new Set([...(existing?.resourceIds || []), resource.id]));
+      return {
+        ...previous,
+        [assignmentAccountId]: {
+          jumpType: resource.kind === 'APP_DIRECT' ? 'APP_DIRECT' : 'OFFICIAL_LANDING',
+          resourceIds,
+          fallbackResourceId: existing?.fallbackResourceId || resource.fallbackLandingPageId,
+          monitoringLinkGroupId: resource.monitoringLinkGroupId,
+        },
+      };
+    });
+    setManualResourceId(undefined);
+  };
+
+  const addManualResource = () => addResourceToAssignment(manualResourceId);
+
+  const removeAssignmentResource = (resourceId: string) => {
+    if (!assignmentAccountId) return;
+    setAssignmentDraft((previous) => {
+      const existing = previous[assignmentAccountId];
+      if (!existing) return previous;
+      const resourceIds = existing.resourceIds.filter((id) => id !== resourceId);
+      if (resourceIds.length === 0) {
+        const next = { ...previous };
+        delete next[assignmentAccountId];
+        return next;
+      }
+      return {
+        ...previous,
+        [assignmentAccountId]: {
+          ...existing,
+          resourceIds,
+          fallbackResourceId: existing.fallbackResourceId === resourceId ? undefined : existing.fallbackResourceId,
+        },
+      };
+    });
+  };
+
+  const confirmAssignments = () => {
+    const configDraft = getDraftWithLandingSelection();
+    setDraft({ ...configDraft, assignments: assignmentDraft });
+    setAssignmentOpen(false);
+    setValidationErrors([]);
+  };
+
+  const handleCreate = () => {
+    const errors = validateTencentBatchDraft(draft, resources);
+    setValidationErrors(errors);
+    if (errors.length > 0) {
+      message.warning(`还有 ${errors.length} 项配置需要完善`);
+      return;
+    }
+
+    const taskId = `TX-BATCH-${Date.now().toString().slice(-8)}`;
+    const details: TaskDetailRow[] = draft.accountIds.map((accountId, index) => {
+      const account = tencentBatchAccounts.find((item) => item.id === accountId)!;
+      const assignment = draft.assignments[accountId];
+      const primary = getTencentBatchResource(assignment.resourceIds[0], resources);
+      const missingFields = assignment.jumpType === 'APP_DIRECT' ? getTencentResourceMissingFields(primary) : [];
+      return {
+        key: `${taskId}-${accountId}`,
+        resultStatus: '执行中',
+        objectId: `待生成-${index + 1}`,
+        objectName: draft.adName,
+        accountId,
+        accountName: account.name,
+        failReason: '',
+        executedAt: formatNow(),
+        jumpType: getTencentJumpTypeLabel(assignment.jumpType),
+        resourceId: primary?.id,
+        resourceName: primary?.name,
+        configWarning: missingFields.length > 0 ? `Mock 预览：缺少 ${missingFields.join('、')}` : '',
+      };
+    });
+    const task = createTaskRecord({
+      taskId,
+      operationType: '批量创建腾讯广告',
+      affectedCount: expectedAds,
+      operator: operatorName,
+      filterSnapshot: [
+        { label: '媒体', value: '腾讯广告' },
+        { label: '账号数', value: String(draft.accountIds.length) },
+        { label: '定向包数', value: String(draft.targetingPackageIds.length) },
+        { label: '标题包数', value: String(draft.titleCount) },
+        { label: '素材组数', value: String(draft.materialGroupCount) },
+        { label: '预选应用直达', value: preselectedAppDirect?.name || '-' },
+        { label: '预选落地页', value: preselectedLandingPage?.name || '-' },
+      ],
+      paramsSummary: `${draft.marketingGoal} / ${draft.promotionProduct} / ${expectedAds} 个广告`,
+      forceStatus: '创建中',
+      media: '腾讯广告',
+      level: '单元',
+      details,
+      successCount: 0,
+      failedCount: 0,
+    });
+    onCreateTask(task);
+    setLastTaskId(taskId);
+    message.success('腾讯广告批量创建任务已生成');
+  };
+
+  const assignmentResources = currentAssignment?.resourceIds
+    .map((resourceId) => getTencentBatchResource(resourceId, resources))
+    .filter((resource): resource is TencentResource => Boolean(resource));
+  const manualResourceOptions = resources.filter((resource) =>
+    assignmentAccountId ? isTencentResourceCompatible(resource, assignmentAccountId) : false,
+  );
+
+  return (
+    <section className="sf-batch-create-page">
+      <div className="sf-batch-create-title-row">
+        <h1>批量创建</h1>
+      </div>
+
+      <div className="sf-batch-create-count-tip">
+        <span className="sf-batch-info-icon">i</span>
+        <b>预计广告数量 = {expectedAds} 个</b>
+        <span>预计创建广告数量 = 账号 {draft.accountIds.length} × 定向包 {draft.targetingPackageIds.length} × 标题包 {draft.titleCount} × 创意素材 {draft.materialGroupCount} = {expectedAds} 个</span>
+      </div>
+
+      <div className="sf-batch-create-toolbar">
+        <span className="sf-batch-toolbar-label">选择媒体</span>
+        <Select className="sf-batch-media-select" value="腾讯广告" options={[{ label: '腾讯广告', value: '腾讯广告' }]} />
+        <Button type="primary" onClick={applyTemplate}>引用规则模板</Button>
+        <Button type="primary" onClick={() => setAuthOpen(true)}>身份认证</Button>
+        <Select className="sf-batch-toolbar-rule-select" placeholder=" " options={[]} />
+        <span className="sf-batch-create-mode-label"><span>?</span> 创建方式</span>
+        <Select value="LANDING_CONFIG" options={[{ label: '分落地页配置', value: 'LANDING_CONFIG' }]} />
+        <Button onClick={clearRules}>清空规则</Button>
+      </div>
+
+      {validationErrors.length > 0 && (
+        <div className="sf-batch-create-errors">
+          <b>请先完善以下配置：</b>
+          {validationErrors.map((error) => <span key={error}>{error}</span>)}
+        </div>
+      )}
+
+      <div className="sf-batch-create-grid">
+        <div className="sf-batch-grid-group sf-batch-grid-group--account">设置账号与广告</div>
+        <div className="sf-batch-grid-group sf-batch-grid-group--ad">设置广告</div>
+        <div className="sf-batch-grid-group sf-batch-grid-group--creative">设置创意素材</div>
+        <div className="sf-batch-grid-group sf-batch-grid-group--landing" aria-hidden="true" />
+
+        <section className="sf-batch-column sf-batch-column--accounts">
+          <div className="sf-batch-subheader">
+            <b>账号 {draft.accountIds.length}</b>
+            <span><button type="button" onClick={openAccountPicker}>添加</button><button type="button" onClick={() => setDraft((previous) => ({ ...previous, accountIds: [], assignments: {} }))}>清空</button></span>
+          </div>
+          <div className="sf-batch-account-list">
+            {selectedAccounts.length === 0 && <div className="sf-batch-empty">请添加广告账号</div>}
+            {selectedAccounts.map((account) => (
+              <div className="sf-batch-account-card" key={account.id}>
+                <div><b>{account.name}</b><span>id：{account.id}</span></div>
+                <button type="button" onClick={() => setDraft((previous) => ({ ...previous, accountIds: previous.accountIds.filter((id) => id !== account.id), assignments: Object.fromEntries(Object.entries(previous.assignments).filter(([id]) => id !== account.id)) }))}><CloseOutlined /></button>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="sf-batch-column sf-batch-column--basic">
+          <div className="sf-batch-subheader"><b>广告基本信息</b><button type="button">编辑</button></div>
+          <div className="sf-batch-basic-info">
+            <dl>
+              <dt>创建方式</dt><dd>新建广告</dd>
+              <dt>多账号分配</dt><dd>多账号一致</dd>
+              <dt>营销目的</dt><dd>{draft.marketingGoal}</dd>
+              <dt>推广产品</dt><dd>{draft.promotionProduct}</dd>
+              <dt>营销载体类型</dt><dd>Android 应用</dd>
+              <dt>广告版位</dt><dd>自动版位</dd>
+              <dt>探索策略</dt><dd>自动探索</dd>
+              <dt>RTA 策略</dt><dd>开启</dd>
+              <dt>计费方式</dt><dd>oCPM</dd>
+              <dt>出价策略</dt><dd>稳定拿量</dd>
+              <dt>广告日预算</dt><dd>不限</dd>
+              <dt>投放日期</dt><dd>长期投放</dd>
+            </dl>
+          </div>
+        </section>
+
+        <section className="sf-batch-column sf-batch-column--target">
+          <div className="sf-batch-subheader"><b>定向包 {draft.targetingPackageIds.length}</b><span><button type="button" onClick={() => setDraft((previous) => ({ ...previous, targetingPackageIds: ['TARGET-1001'] }))}>添加</button><button type="button" onClick={() => setDraft((previous) => ({ ...previous, targetingPackageIds: [] }))}>清空</button></span></div>
+          <div className="sf-batch-target-card">
+            <div className="sf-batch-target-select">程序化分配 <DownOutlined /></div>
+            <div className="sf-batch-target-chip">品牌宣传-商品聚合页-Android应用 <CloseOutlined /></div>
+          </div>
+        </section>
+
+        <section className="sf-batch-column sf-batch-column--creative-basic">
+          <div className="sf-batch-subheader"><b>创意基本信息</b><button type="button">编辑</button></div>
+          <div className="sf-batch-basic-info">
+            <dl>
+              <dt>开启状态</dt><dd>关闭</dd>
+              <dt>加上随机ID后缀</dt><dd>是</dd>
+              <dt>投放模式</dt><dd>组件化创意</dd>
+              <dt>广告含创意数</dt><dd>{draft.titleCount}</dd>
+              <dt>创意含素材数</dt><dd>{draft.materialGroupCount}</dd>
+              <dt>创意含标题数</dt><dd>{draft.titleCount}</dd>
+              <dt>指定创意形式</dt><dd>关闭</dd>
+              <dt>落地页</dt><dd>{preselectedLandingPage ? '已设置' : '待设置'}</dd>
+              <dt>数据外显</dt><dd>关闭</dd>
+            </dl>
+          </div>
+        </section>
+
+        <section className="sf-batch-column sf-batch-column--copy">
+          <div className="sf-batch-subheader"><b>创意文案</b><button type="button">添加</button></div>
+          <div className="sf-batch-copy-body">
+            <div className="sf-batch-copy-fixed-label">固定文案：</div>
+            <Input.TextArea rows={7} value={draft.creativeCopy} onChange={(event) => setDraft((previous) => ({ ...previous, creativeCopy: event.target.value }))} />
+          </div>
+        </section>
+
+        <section className="sf-batch-column sf-batch-column--material">
+          <div className="sf-batch-subheader"><b>创意素材 {draft.materialGroupCount} 组</b><span><button type="button">添加</button><button type="button">清空</button></span></div>
+          <div className="sf-batch-material-list">
+            <div className="sf-batch-material-card"><div><span className="sf-batch-material-thumb">▶</span><b>创意1：</b><small>视频素材-测试</small></div><button type="button">×</button></div>
+          </div>
+        </section>
+
+        <section className="sf-batch-column sf-batch-column--landing">
+          <div className="sf-batch-subheader"><b>落地页配置</b><button type="button" onClick={() => openAssignment(false)}>添加</button></div>
+          <div className="sf-batch-landing-config-body">
+            {preselectedAppDirect ? (
+              <div className="sf-batch-landing-resource-chip">
+                <span>应用直达</span>
+                <b>{preselectedAppDirect.name}</b>
+                <small>{preselectedAppDirect.monitoringLinkGroupId ? `监测链接组：${preselectedAppDirect.monitoringLinkGroupId}` : preselectedAppDirect.id}</small>
+                <em>Android：{preselectedAppDirect.androidAppId || '未配置'} · iOS：{preselectedAppDirect.iosAppId || '未配置'}</em>
+                <em>通用链接：{preselectedAppDirect.universalUrl || '未配置'} · 兜底：{preselectedAppDirect.fallbackLandingPageName || '未配置'}</em>
+              </div>
+            ) : null}
+            {preselectedLandingPage ? (
+              <div className="sf-batch-landing-resource-chip">
+                <span>官方落地页</span>
+                <b>{preselectedLandingPage.name}</b>
+                <small>{preselectedLandingPage.id}</small>
+              </div>
+            ) : null}
+            {!preselectedAppDirect && !preselectedLandingPage && <div className="sf-batch-landing-empty">暂未配置落地页或应用直达</div>}
+            <div className="sf-batch-landing-match-count">已匹配账号：{assignmentCount}/{draft.accountIds.length}</div>
+          </div>
+        </section>
+      </div>
+
+      <div className="sf-batch-create-footer">
+        <Button onClick={onBack}>返回</Button>
+        <Button disabled={!savedTemplate} onClick={updateTemplate}>更新规则模板</Button>
+        <Button onClick={saveAsTemplate}>保存为新模板</Button>
+        <Button type="primary" onClick={handleCreate}>生成广告计划</Button>
+      </div>
+
+      {lastTaskId && <div className="sf-batch-task-created">任务已创建：{lastTaskId}，状态为“创建中”，可前往任务管理查看账号级结果。</div>}
+
+      <Modal title="选择预选跳转资源" open={resourcePickerOpen} width={860} centered onCancel={() => setResourcePickerOpen(false)} onOk={confirmResourcePicker} okText="确定" cancelText="取消">
+        <div className="sf-batch-picker-tabs"><button className={resourcePickerKind === 'APP_DIRECT' ? 'active' : ''} type="button" onClick={() => { setResourcePickerKind('APP_DIRECT'); setResourcePickerSelection(draft.preselectedAppDirectId); }}>应用直达</button><button className={resourcePickerKind === 'LANDING_PAGE' ? 'active' : ''} type="button" onClick={() => { setResourcePickerKind('LANDING_PAGE'); setResourcePickerSelection(draft.preselectedLandingPageId); }}>官方落地页</button></div>
+        <div className="sf-batch-resource-list">
+          {resources.filter((resource) => resource.kind === resourcePickerKind).map((resource) => (
+            <button className={resourcePickerSelection === resource.id ? 'sf-batch-resource-option selected' : 'sf-batch-resource-option'} key={resource.id} type="button" onClick={() => setResourcePickerSelection(resource.id)}>
+              <span className="sf-batch-radio">{resourcePickerSelection === resource.id ? '✓' : ''}</span>
+              <span><b>{resource.name}</b><small>{resource.monitoringLinkGroupId ? `监测链接组：${resource.monitoringLinkGroupId}` : resource.id} · {resource.url || '未配置应用直达链接'}</small><small>适用账号：{resource.accountIds.length} 个 · Android：{resource.androidAppId || '未配置'} · iOS：{resource.iosAppId || '未配置'}</small></span>
+            </button>
+          ))}
+        </div>
+      </Modal>
+
+      <Modal title="选择广告账号" open={accountPickerOpen} width={640} centered onCancel={() => setAccountPickerOpen(false)} onOk={confirmAccountPicker} okText="确定" cancelText="取消">
+        <Checkbox.Group className="sf-batch-account-picker" value={accountPickerSelection} onChange={(values) => setAccountPickerSelection(values.map(String))}>
+          {tencentBatchAccounts.map((account) => <Checkbox value={account.id} key={account.id}>{account.name}（{account.id}）</Checkbox>)}
+        </Checkbox.Group>
+      </Modal>
+
+      <Modal title="身份认证" open={authOpen} width={520} centered onCancel={() => setAuthOpen(false)} footer={<Button type="primary" onClick={() => setAuthOpen(false)}>知道了</Button>}>
+        <div className="sf-batch-auth-modal"><div className="sf-batch-auth-status">✓</div><b>本地 Mock 身份认证已通过</b><span>当前页面使用本地演示数据，不会发起真实授权或广告平台写入。</span></div>
+      </Modal>
+
+      <Modal title="配置落地页" open={assignmentOpen} width={1320} centered onCancel={() => setAssignmentOpen(false)} footer={[<Button key="cancel" onClick={() => setAssignmentOpen(false)}>取消</Button>, <Button key="ok" type="primary" onClick={confirmAssignments}>确定</Button>]}>
+        <div className="sf-batch-landing-modal">
+          <div className="sf-batch-landing-rule-row">
+            <span className="sf-batch-landing-rule-label">配置规则</span>
+            <div className="sf-batch-landing-rule-tabs">
+              {tencentLandingConfigRules.map((rule) => (
+                <button className={landingConfigRule === rule.value ? 'active' : ''} type="button" key={rule.value} onClick={() => setLandingConfigRule(rule.value)}>{rule.label}</button>
+              ))}
+            </div>
+          </div>
+          <div className="sf-batch-landing-count-row">
+            <label><span>*</span>创意包含落地页数</label>
+            <InputNumber min={1} max={3} value={landingPageCount} onChange={(value) => setLandingPageCount(value || 1)} />
+            <span>最多支持3个落地页，请按实际需要填写，否则会报错</span>
+          </div>
+          <div className="sf-batch-landing-workspace">
+            <div className="sf-batch-landing-ad-list">
+              {selectedAccounts.map((account) => (
+                <div className="sf-batch-landing-ad-item" key={account.id}>
+                  <b>{draft.adName || '广告计划'}</b>
+                  <span>ID：{account.id}</span>
+                </div>
+              ))}
+            </div>
+            <div className="sf-batch-landing-main">
+              <div className="sf-batch-landing-jump-row">
+                <span>跳转类型（落地页）</span>
+                <div className="sf-batch-landing-jump-tabs">
+                  <button type="button" disabled>Android 默认下载页</button>
+                  <button type="button" disabled>跳转厂商商店</button>
+                  <button className={landingConfigKind === 'APP_DIRECT' ? 'active' : ''} type="button" onClick={() => { setLandingConfigKind('APP_DIRECT'); setLandingResourceSelection(draft.preselectedAppDirectId ? [draft.preselectedAppDirectId] : []); }}>应用直达</button>
+                  <button className={landingConfigKind === 'LANDING_PAGE' ? 'active' : ''} type="button" onClick={() => { setLandingConfigKind('LANDING_PAGE'); setLandingResourceSelection(draft.preselectedLandingPageId ? [draft.preselectedLandingPageId] : []); }}>官方落地页</button>
+                  <button type="button" disabled>一键下载</button>
+                </div>
+              </div>
+              <div className="sf-batch-landing-ad-count"><span>广告和创意数</span><b>广告数：{draft.accountIds.length}，创意数：{draft.materialGroupCount}</b></div>
+              <div className="sf-batch-landing-actions">
+                <Button type="primary" onClick={oneClickAssign}>按账户自动匹配</Button>
+                <span>{assignmentNotice || `已匹配账号：${Object.values(assignmentDraft).filter((item) => item.resourceIds.length).length}/${draft.accountIds.length}`}</span>
+              </div>
+              <div className="sf-batch-landing-selection-toolbar">
+                <Input placeholder="请输入搜索内容" prefix={<SearchOutlined />} value={landingConfigSearch} onChange={(event) => setLandingConfigSearch(event.target.value)} />
+                <div className={landingResourceSelection.length > landingPageCount ? 'is-over-limit' : ''}>已选{landingConfigKind === 'APP_DIRECT' ? '应用直达' : '落地页'}：{landingResourceSelection.length}/{landingPageCount}<button type="button" onClick={() => setLandingResourceSelection([])}>清空选中</button></div>
+              </div>
+              <div className="sf-batch-landing-selection-grid">
+                <div className="sf-batch-landing-resource-table">
+                <div className="sf-batch-landing-table-head"><Checkbox /> <span>{landingConfigKind === 'APP_DIRECT' ? '监测链接组' : '名称'}</span><span>ID</span></div>
+                  {landingConfigResources.map((resource) => (
+                    <label className="sf-batch-landing-resource-row" key={resource.id}>
+                      <Checkbox checked={landingResourceSelection.includes(resource.id)} onChange={() => setLandingResourceSelection((previous) => previous.includes(resource.id) ? previous.filter((id) => id !== resource.id) : [...previous, resource.id])} />
+                      <span><b>{resource.name}</b><small>{resource.kind === 'APP_DIRECT' ? `直达：${resource.url || '-'} · Android：${resource.androidAppId || '-'} · iOS：${resource.iosAppId || '-'} · 通用：${resource.universalUrl || '-'} · 兜底：${resource.fallbackLandingPageName || '-'}` : resource.url}</small></span><span>{resource.monitoringLinkGroupId || resource.id}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="sf-batch-landing-selected-table">
+                <div className="sf-batch-landing-table-head"><Checkbox /> <span>{landingConfigKind === 'APP_DIRECT' ? '监测链接组' : '名称'}</span><span>ID</span><span>操作</span></div>
+                  {landingSelectedResources.map((resource) => (
+                    <div className="sf-batch-landing-resource-row" key={resource.id}>
+                      <Checkbox checked disabled />
+                      <span><b>{resource.name}</b><small>{resource.kind === 'APP_DIRECT' ? `直达：${resource.url || '-'} · Android：${resource.androidAppId || '-'} · iOS：${resource.iosAppId || '-'} · 通用：${resource.universalUrl || '-'} · 兜底：${resource.fallbackLandingPageName || '-'}` : resource.url}</small></span><span>{resource.monitoringLinkGroupId || resource.id}</span><button type="button" onClick={() => setLandingResourceSelection((previous) => previous.filter((id) => id !== resource.id))}>删除</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="sf-batch-landing-hint">应用直达直接选择监测链接组并预览 Android、iOS、通用链接和兜底页字段；自动匹配按账号范围执行，已有账号配置不覆盖。字段不完整只做 Mock 任务提示。</div>
+            </div>
+          </div>
+        </div>
+      </Modal>
+    </section>
+  );
+}
+
 export default function SmallFighterPlan() {
-  const [pageView, setPageView] = useState<PageView>(() => (window.location.hash === '#task' ? 'task' : 'promotion'));
+  const [pageView, setPageView] = useState<PageView>(() => {
+    if (window.location.hash === '#task') return 'task';
+    if (window.location.hash === '#tencent-batch-create') return 'tencentBatchCreate';
+    if (window.location.hash === '#monitoring-links') return 'monitoringLinks';
+    return 'promotion';
+  });
   const [levelKey, setLevelKey] = useState<LevelKey>('project');
   const [rows, setRows] = useState(projectRows);
   const [unitTableRows, setUnitTableRows] = useState(unitRows);
@@ -920,6 +2348,7 @@ export default function SmallFighterPlan() {
   const [creatingDeleteTask, setCreatingDeleteTask] = useState(false);
   const [latestDeleteTask, setLatestDeleteTask] = useState<FilteredDeleteTaskResult | null>(null);
   const [taskRecords, setTaskRecords] = useState<AsyncTaskRecord[]>(initialTaskRecords);
+  const [monitoringLinkGroups, setMonitoringLinkGroups] = useState<TencentMonitoringLinkGroup[]>(initialTencentMonitoringLinkGroups);
   const [taskStatusFilter, setTaskStatusFilter] = useState<TaskStatus | 'all'>('all');
   const [taskOperationFilter, setTaskOperationFilter] = useState<TaskOperationType | 'all'>('all');
   const [taskKeyword, setTaskKeyword] = useState('');
@@ -928,6 +2357,37 @@ export default function SmallFighterPlan() {
   const [taskDetailFailedOnly, setTaskDetailFailedOnly] = useState(false);
   const [taskDetailKeyword, setTaskDetailKeyword] = useState('');
   const [taskDetailPage, setTaskDetailPage] = useState(1);
+  const [tencentBatchOpen, setTencentBatchOpen] = useState(false);
+  const [tencentCarrierType, setTencentCarrierType] = useState<TencentMarketingCarrierType>('MARKETING_CARRIER_TYPE_JUMP_PAGE');
+  const [tencentAppId, setTencentAppId] = useState('');
+  const [tencentOptimizationGoal, setTencentOptimizationGoal] = useState<TencentOptimizationGoal | undefined>(
+    'OPTIMIZATIONGOAL_PROMOTION_VIEW_KEY_PAGE',
+  );
+  const [tencentPlatformChannelAssetId, setTencentPlatformChannelAssetId] = useState('9001024');
+  const [tencentTemplate, setTencentTemplate] = useState<TencentBatchTemplate | null>(null);
+  const [tencentLatestPreview, setTencentLatestPreview] = useState<TencentBatchPreview | null>(null);
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      if (window.location.hash === '#task') {
+        setPageView('task');
+      } else if (window.location.hash === '#tencent-batch-create') {
+        setPageView('tencentBatchCreate');
+        setTaskDrawerOpen(false);
+        setSelectedTask(null);
+      } else if (window.location.hash === '#monitoring-links') {
+        setPageView('monitoringLinks');
+        setTaskDrawerOpen(false);
+        setSelectedTask(null);
+      } else {
+        setPageView('promotion');
+        setTaskDrawerOpen(false);
+        setSelectedTask(null);
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
 
   const visibleRows = useMemo(() => {
     return rows.filter((row) => {
@@ -952,6 +2412,19 @@ export default function SmallFighterPlan() {
   const currentLevelLabel: PromotionLevel = levelKey === 'unit' ? '单元' : '项目';
   const currentResultCount = levelKey === 'unit' ? filteredUnitResultCount : filteredResultCount;
   const selectedWeekSlotSet = useMemo(() => new Set(selectedWeekSlots), [selectedWeekSlots]);
+  const tencentIsAppCarrier = isTencentAppCarrier(tencentCarrierType);
+  const tencentAppIdRequiredButEmpty = tencentIsAppCarrier && !tencentAppId.trim();
+  const tencentOptimizationOptions = useMemo(() => getTencentOptimizationOptions(tencentCarrierType), [tencentCarrierType]);
+  const tencentPreviewPayload = useMemo(
+    () =>
+      buildTencentBatchPreview({
+        carrierType: tencentCarrierType,
+        appId: tencentAppId,
+        optimizationGoal: tencentOptimizationGoal,
+        platformChannelAssetId: tencentPlatformChannelAssetId,
+      }),
+    [tencentAppId, tencentCarrierType, tencentOptimizationGoal, tencentPlatformChannelAssetId],
+  );
 
   const filterSnapshot = useMemo(() => {
     if (levelKey === 'unit') {
@@ -995,6 +2468,28 @@ export default function SmallFighterPlan() {
     });
   }, [taskKeyword, taskOperationFilter, taskRecords, taskStatusFilter]);
 
+  const tencentResources = useMemo(() => {
+    const groupMap = new Map(monitoringLinkGroups.map((group) => [group.id, group]));
+    const baseResources = tencentBatchResources.map((resource) => {
+      const group = groupMap.get(resource.monitoringLinkGroupId || resource.id);
+      if (!group) return resource;
+      const groupResource = monitoringLinkGroupToResource(group);
+      return {
+        ...resource,
+        ...groupResource,
+        id: resource.id,
+        accountIds: resource.accountIds.length > 0 ? resource.accountIds : groupResource.accountIds,
+        monitoringLinkGroupId: group.id,
+        monitoringLinkGroup: group,
+      };
+    });
+    const baseIds = new Set(baseResources.map((resource) => resource.id));
+    return [
+      ...baseResources,
+      ...monitoringLinkGroups.filter((group) => !baseIds.has(group.id)).map(monitoringLinkGroupToResource),
+    ];
+  }, [monitoringLinkGroups]);
+
   const selectedTaskDetails = useMemo(() => {
     if (!selectedTask) return [];
     return selectedTask.details.filter((detail) => {
@@ -1033,9 +2528,42 @@ export default function SmallFighterPlan() {
     setPageView('task');
   };
 
+  const openTencentBatchPage = () => {
+    window.location.hash = 'tencent-batch-create';
+    setPageView('tencentBatchCreate');
+  };
+
+  const openMonitoringLinksPage = () => {
+    window.location.hash = 'monitoring-links';
+    setPageView('monitoringLinks');
+    setTaskDrawerOpen(false);
+    setSelectedTask(null);
+  };
+
   const openPromotionPage = () => {
     window.location.hash = '';
     setPageView('promotion');
+    setTaskDrawerOpen(false);
+    setSelectedTask(null);
+  };
+
+  const appendTencentBatchTask = (task: AsyncTaskRecord) => {
+    setTaskRecords((previous) => [task, ...previous]);
+  };
+
+  const appendMonitoringLinkGroups = (groupsToAdd: TencentMonitoringLinkGroup[]) => {
+    setMonitoringLinkGroups((previous) => [...groupsToAdd, ...previous]);
+  };
+
+  const saveMonitoringLinkGroup = (group: TencentMonitoringLinkGroup) => {
+    setMonitoringLinkGroups((previous) => {
+      const exists = previous.some((item) => item.id === group.id);
+      return exists ? previous.map((item) => item.id === group.id ? group : item) : [group, ...previous];
+    });
+  };
+
+  const deleteMonitoringLinkGroup = (groupId: string) => {
+    setMonitoringLinkGroups((previous) => previous.filter((group) => group.id !== groupId));
   };
 
   const openTaskDetail = (task: AsyncTaskRecord) => {
@@ -1044,6 +2572,90 @@ export default function SmallFighterPlan() {
     setTaskDetailKeyword('');
     setTaskDetailPage(1);
     setTaskDrawerOpen(true);
+  };
+
+  const handleTencentCarrierChange = (carrierType: TencentMarketingCarrierType) => {
+    setTencentCarrierType(carrierType);
+    setTencentOptimizationGoal(undefined);
+    setTencentLatestPreview(null);
+    if (carrierType === 'MARKETING_CARRIER_TYPE_JUMP_PAGE') {
+      setTencentAppId('');
+    }
+  };
+
+  const handleTencentAppIdChange = (value: string) => {
+    setTencentAppId(value);
+    setTencentOptimizationGoal(undefined);
+    setTencentLatestPreview(null);
+  };
+
+  const handleSaveTencentTemplate = () => {
+    setTencentTemplate({
+      carrierType: tencentCarrierType,
+      appId: tencentAppId,
+      optimizationGoal: tencentOptimizationGoal,
+      platformChannelAssetId: tencentPlatformChannelAssetId,
+    });
+    message.success('规则模板已保存');
+  };
+
+  const handleApplyTencentTemplate = () => {
+    if (!tencentTemplate) {
+      message.warning('暂无可引用的规则模板');
+      return;
+    }
+    setTencentCarrierType(tencentTemplate.carrierType);
+    setTencentAppId(tencentTemplate.appId);
+    setTencentOptimizationGoal(tencentTemplate.optimizationGoal);
+    setTencentPlatformChannelAssetId(tencentTemplate.platformChannelAssetId);
+    setTencentLatestPreview(null);
+    message.success('已引用规则模板');
+  };
+
+  const handleGenerateTencentBatch = () => {
+    if (!tencentPlatformChannelAssetId.trim()) {
+      message.warning('请选择或输入平台频道产品 ID');
+      return;
+    }
+    if (tencentAppIdRequiredButEmpty) {
+      message.warning(`请先输入${getTencentAppIdLabel(tencentCarrierType)}，再生成广告计划`);
+      return;
+    }
+    if (!tencentOptimizationGoal) {
+      message.warning('请选择转化/优化目标');
+      return;
+    }
+
+    const preview = buildTencentBatchPreview({
+      carrierType: tencentCarrierType,
+      appId: tencentAppId,
+      optimizationGoal: tencentOptimizationGoal,
+      platformChannelAssetId: tencentPlatformChannelAssetId,
+    });
+    const taskId = `TX-BATCH-${Date.now().toString().slice(-8)}`;
+
+    setTencentLatestPreview(preview);
+    setTaskRecords((prev) => [
+      createTaskRecord({
+        taskId,
+        operationType: '批量创建腾讯广告',
+        affectedCount: 24,
+        operator: operatorName,
+        filterSnapshot: [
+          { label: '媒体', value: '腾讯广告' },
+          { label: '营销目的', value: '用户增长' },
+          { label: '推广产品', value: '平台频道' },
+          { label: '营销载体', value: getTencentCarrierLabel(tencentCarrierType) },
+          { label: '应用ID', value: tencentIsAppCarrier ? tencentAppId.trim() : '-' },
+          { label: '转化目标', value: tencentOptimizationGoal },
+        ],
+        paramsSummary: `平台频道 / ${getTencentCarrierLabel(tencentCarrierType)} / ${tencentOptimizationGoal}`,
+        media: '腾讯广告',
+        level: '单元',
+      }),
+      ...prev,
+    ]);
+    message.success('腾讯广告批量创建任务已生成');
   };
 
   const focusFailedDetails = () => {
@@ -1620,6 +3232,25 @@ export default function SmallFighterPlan() {
       ellipsis: true,
     },
     {
+      title: '跳转类型',
+      dataIndex: 'jumpType',
+      width: 130,
+      render: (value?: string) => value || '-',
+    },
+    {
+      title: '资源',
+      dataIndex: 'resourceName',
+      width: 180,
+      ellipsis: true,
+      render: (value: string | undefined, record: TaskDetailRow) => value ? `${value}${record.resourceId ? `（${record.resourceId}）` : ''}` : '-',
+    },
+    {
+      title: '配置提示',
+      dataIndex: 'configWarning',
+      width: 220,
+      render: (value?: string) => value ? <span className="sf-task-config-warning">{value}</span> : '-',
+    },
+    {
       title: '失败信息',
       dataIndex: 'failReason',
       width: 180,
@@ -1673,7 +3304,7 @@ export default function SmallFighterPlan() {
   );
 
   return (
-    <div className="sf-portal-page">
+    <div className={pageView === 'tencentBatchCreate' || pageView === 'monitoringLinks' ? 'sf-portal-page sf-portal-page--batch' : 'sf-portal-page'}>
       <header className="sf-topbar">
         <div className="sf-logo">
           <span className="sf-logo-mark">▼</span>
@@ -1688,11 +3319,24 @@ export default function SmallFighterPlan() {
           <button>智剪</button>
         </nav>
         <div className="sf-top-actions">
-          <Button type="text" className="sf-back-link">返回上一级</Button>
-          <span className="sf-top-divider" />
-          <Button type="text" icon={<QrcodeOutlined />} />
-          <Button type="text" icon={<AppstoreOutlined />} />
-          <Button type="text" icon={<CloudDownloadOutlined />} onClick={openTaskPage} />
+          {pageView === 'tencentBatchCreate' || pageView === 'monitoringLinks' ? (
+            <>
+              <Button type="text" className="sf-legacy-top-pill">◈ 反馈</Button>
+              <Button type="text" className="sf-legacy-top-pill">▣ 教程</Button>
+              <span className="sf-top-divider" />
+              <Button type="text" icon={<CloudDownloadOutlined />} onClick={openTaskPage} />
+              <Button type="text" icon={<BellOutlined />} />
+              <span className="sf-top-divider" />
+            </>
+          ) : (
+            <>
+              <Button type="text" className="sf-back-link">返回上一级</Button>
+              <span className="sf-top-divider" />
+              <Button type="text" icon={<QrcodeOutlined />} />
+              <Button type="text" icon={<AppstoreOutlined />} />
+              <Button type="text" icon={<CloudDownloadOutlined />} onClick={openTaskPage} />
+            </>
+          )}
           <span className="sf-avatar">Z</span>
           <span className="sf-user">zhitou@sunteng...</span>
           <DownOutlined className="sf-user-arrow" />
@@ -1700,17 +3344,21 @@ export default function SmallFighterPlan() {
       </header>
 
       <div className="sf-body">
-        <aside className="sf-channel-sidebar">
-          {channels.map(([key, name, color, icon]) => (
-            <button key={key} className={key === 'channel-tt' ? 'active' : ''}>
-              <span className="sf-channel-icon" style={{ color }}>{icon}</span>
-              <span>{name}</span>
+        {pageView === 'tencentBatchCreate' || pageView === 'monitoringLinks' ? (
+          <TencentBatchLegacySidebar activeItem={pageView === 'monitoringLinks' ? '监测链接' : undefined} onMonitoringLinks={openMonitoringLinksPage} />
+        ) : (
+          <aside className="sf-channel-sidebar">
+            {channels.map(([key, name, color, icon]) => (
+              <button key={key} className={key === 'channel-tt' ? 'active' : ''}>
+                <span className="sf-channel-icon" style={{ color }}>{icon}</span>
+                <span>{name}</span>
+              </button>
+            ))}
+            <button className="sf-sidebar-collapse">
+              <LeftOutlined />
             </button>
-          ))}
-          <button className="sf-sidebar-collapse">
-            <LeftOutlined />
-          </button>
-        </aside>
+          </aside>
+        )}
 
         <main className="sf-content">
           {pageView === 'promotion' ? (
@@ -1810,6 +3458,9 @@ export default function SmallFighterPlan() {
 
             <div className="sf-action-row">
               <div className="sf-left-actions">
+                <Button className="sf-tencent-create-btn" type="primary" onClick={openTencentBatchPage}>
+                  腾讯广告批量创建
+                </Button>
                 <Dropdown trigger={['click']} overlay={batchMenu} placement="bottomLeft">
                   <Button className="sf-outline-btn">批量操作</Button>
                 </Dropdown>
@@ -1876,7 +3527,7 @@ export default function SmallFighterPlan() {
               />
             </div>
           </section>
-          ) : (
+          ) : pageView === 'task' ? (
             <section className="sf-panel sf-task-page">
               <div className="sf-task-head">
                 <div>
@@ -1931,9 +3582,172 @@ export default function SmallFighterPlan() {
                 scroll={{ x: 1160 }}
               />
             </section>
+          ) : pageView === 'monitoringLinks' ? (
+            <TencentMonitoringLinkManagementPage
+              groups={monitoringLinkGroups}
+              onImportGroups={appendMonitoringLinkGroups}
+              onSaveGroup={saveMonitoringLinkGroup}
+              onDeleteGroup={deleteMonitoringLinkGroup}
+            />
+          ) : (
+            <TencentBatchCreatePage resources={tencentResources} onBack={openPromotionPage} onCreateTask={appendTencentBatchTask} />
           )}
         </main>
       </div>
+
+      <Modal
+        title="腾讯广告批量创建"
+        open={tencentBatchOpen}
+        onCancel={() => setTencentBatchOpen(false)}
+        width={1040}
+        centered
+        className="sf-tencent-batch-modal"
+        footer={[
+          <Button key="template" onClick={handleApplyTencentTemplate}>引用规则模板</Button>,
+          <Button key="save" onClick={handleSaveTencentTemplate}>保存为规则模板</Button>,
+          <Button
+            key="ok"
+            type="primary"
+            disabled={tencentAppIdRequiredButEmpty || !tencentOptimizationGoal || !tencentPlatformChannelAssetId.trim()}
+            onClick={handleGenerateTencentBatch}
+          >
+            生成广告计划
+          </Button>,
+        ]}
+      >
+        <div className="sf-tencent-flow">
+          <section className="sf-tencent-card sf-tencent-card--content">
+            <div className="sf-tencent-card-head">
+              <div>
+                <h3>营销内容</h3>
+                <span>用户增长 / 平台频道链路</span>
+              </div>
+              <b>基础 v3.0 字段</b>
+            </div>
+
+            <div className="sf-tencent-purpose-grid">
+              {['商品销售', '品牌宣传', '加粉互动', '线索留资', '用户增长'].map((item) => (
+                <button className={item === '用户增长' ? 'active' : ''} key={item} type="button">
+                  {item}
+                </button>
+              ))}
+            </div>
+
+            <div className="sf-tencent-field">
+              <label>推广产品</label>
+              <div className="sf-tencent-chip-row">
+                {['Android 应用', 'iOS 应用', '微信小程序', '平台频道', '视频号直播'].map((item) => (
+                  <span className={item === '平台频道' ? 'active' : ''} key={item}>
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="sf-tencent-field sf-tencent-product-field">
+              <label>平台频道产品 ID</label>
+              <Input
+                value={tencentPlatformChannelAssetId}
+                onChange={(event) => {
+                  setTencentPlatformChannelAssetId(event.target.value);
+                  setTencentLatestPreview(null);
+                }}
+                placeholder="请选择或输入平台频道产品 ID"
+              />
+            </div>
+
+            <div className="sf-tencent-field">
+              <label>营销载体</label>
+              <div className="sf-tencent-carrier-tabs">
+                {tencentCarrierOptions.map((item) => (
+                  <button
+                    className={tencentCarrierType === item.value ? 'active' : ''}
+                    key={item.value}
+                    type="button"
+                    onClick={() => handleTencentCarrierChange(item.value)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {tencentIsAppCarrier && (
+              <div className="sf-tencent-field sf-tencent-product-field">
+                <label>{getTencentAppIdLabel(tencentCarrierType)}</label>
+                <Input
+                  status={tencentAppIdRequiredButEmpty ? 'warning' : undefined}
+                  value={tencentAppId}
+                  onChange={(event) => handleTencentAppIdChange(event.target.value)}
+                  placeholder={`请输入推广的 ${getTencentAppIdLabel(tencentCarrierType)}`}
+                />
+                {tencentAppIdRequiredButEmpty && (
+                  <div className="sf-tencent-warning">
+                    请先输入{getTencentAppIdLabel(tencentCarrierType)}，再选择转化
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="sf-tencent-field sf-tencent-product-field">
+              <label>转化/优化目标</label>
+              <Select
+                value={tencentOptimizationGoal}
+                disabled={tencentAppIdRequiredButEmpty}
+                placeholder={tencentAppIdRequiredButEmpty ? `请先输入${getTencentAppIdLabel(tencentCarrierType)}` : '请选择转化'}
+                suffixIcon={<DownOutlined />}
+                options={tencentOptimizationOptions}
+                onChange={(value) => {
+                  setTencentOptimizationGoal(value);
+                  setTencentLatestPreview(null);
+                }}
+              />
+              <div className="sf-tencent-hint">
+                查询 optimization_goal_permissions/get 时会带上当前营销载体；Android/iOS 会额外携带 App ID。
+              </div>
+            </div>
+          </section>
+
+          <section className="sf-tencent-card">
+            <div className="sf-tencent-card-head">
+              <div>
+                <h3>生成字段预览</h3>
+                <span>营销单元与创意主跳转</span>
+              </div>
+              <b>{getTencentCarrierLabel(tencentCarrierType)}</b>
+            </div>
+
+            <div className="sf-tencent-diff-grid">
+              <div>
+                <span>marketing_goal</span>
+                <b>MARKETING_GOAL_USER_GROWTH</b>
+              </div>
+              <div>
+                <span>marketing_target_type</span>
+                <b>MARKETING_TARGET_TYPE_PLATFORM_CHANNEL</b>
+              </div>
+              <div>
+                <span>marketing_carrier_type</span>
+                <b>{tencentCarrierType}</b>
+              </div>
+              <div>
+                <span>marketing_carrier_detail</span>
+                <b>{tencentIsAppCarrier ? `marketing_carrier_id=${tencentAppId.trim() || '--'}` : '不传'}</b>
+              </div>
+              <div>
+                <span>main_jump_info.page_type</span>
+                <b>{tencentPreviewPayload.dynamic_creative_request.main_jump_info[0].value.page_type}</b>
+              </div>
+              <div>
+                <span>targeting.user_os</span>
+                <b>{tencentPreviewPayload.adgroup_request.targeting?.user_os.join(', ') || '不锁定'}</b>
+              </div>
+            </div>
+
+            <pre className="sf-tencent-json">{JSON.stringify(tencentLatestPreview || tencentPreviewPayload, null, 2)}</pre>
+          </section>
+        </div>
+      </Modal>
 
       <Modal
         title={`按筛选结果修改${levelKey === 'unit' ? '单元出价' : '出价'}`}
